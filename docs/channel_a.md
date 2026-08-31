@@ -319,45 +319,65 @@ flipped-order holdout. Any statistic that depends only on
 cross-site coherence — which is the only architecture-invariant
 signal — will generalize.
 
-**Requirement 0 for the generator (D5e-based, `c5d0a75`).** For each
-planted site, at the target task's detector L=11:
-```
-competitor_count = #{ nc positions p : m_max(p, site.flank) ≥ m_planted }
-fraction(competitor_count ≤ 10) < 5%
-```
-- T-WT baseline at L=11: 2.94% of sites at `competitor_count ≤ 10`.
-- V4.2 (2000 sampled positive sites) at L=11: 33.5%. **11× above
-  the T-WT baseline.**
-- The V4.2 gap is entirely at `planted_m ≥ 10`, where the planted
-  guide becomes nearly sole max (competitor count 2–3). T-WT has
-  zero sites at `planted_m ≥ 10`. This is the concrete, measurable
-  form of the synthetic → real gap that V5A-3a and downstream
-  selectors repeatedly hit.
-- Competitor count is tie-robust (unlike argmax and centroid
-  distance), directly corresponds to the E-value analytic
-  (`E = N_windows · P(Bin(L, 0.25) ≥ m_planted)`), and cannot be
-  gamed by lowering fidelity (fidelity moves planted_m; competitor
-  count moves accordingly; only the *ratio* characterizes the
-  task).
+**Requirement 0 for the generator, decomposed into two constraints.**
 
-**Requirement 0's calibration base is currently n = 1 natural bridge
-RNA (T-WT).** Expanding it does NOT come from the 1,054-recombinase
-Durrant table (that table is phylogenetic metadata only, no per-
-recombinase sequence or flank). Immediate next step: compute
-background competitor-density curves on the ~11 supplementary
-ncRNAs (Durrant Supp Table 5 + seekRNA Supp Table 1) paired with
-the 2,763 real bacterial flanks already loaded. Cost: several
-hours. Gives 11 architecturally-diverse background curves with a
-2–3× ncRNA length spread that lets us test whether competitor
-count is architecture-invariant — the key claim the generator's
-orthogonality relies on. The T-WT operating point remains the sole
-validated planted_m anchor. Multi-site flanks from seekRNA's
-`AtaideLab/Targets` pipeline (days) and from Durrant's
-`BridgeRNA2024` pipeline (weeks, IS110-only, lower priority
-because IS110 is n=1 for architecture) come later. All of this
-must precede any synthetic sample generation. Building the
-generator against a single T-WT-operating-point target without
-the cross-architecture invariance check hardcodes IS110's specific
+Under the analytic form `E = N_windows · P(Bin(L, 0.25) ≥ m_planted)`,
+per-nc-position competitor rate is essentially a mathematical constant
+determined by `(L, m_planted, flank_length)` alone. At L=11, m=8, 120-nt
+flank pooled over 2 orientations:
+```
+110 flank starts × 2 orient × P(Bin(11, 0.25) ≥ 8) = 0.262 competitors / nc position
+```
+A+ measurement on 6 clean natural ncRNAs (Durrant T-WT plus 5 seekRNA
+systems, 177–281 nt, spanning IS110 and IS1111) gave observed rates
+0.204–0.238 — the shortfall from 0.262 is exactly the composition-skew
+correction. **Because the rate is analytically pinned, "match the
+observed rate" is a nearly-vacuous constraint that any reasonable
+generator satisfies automatically.** The A+ finding confirms
+architecture invariance holds — that was needed for the generator's
+orthogonality argument — but does not by itself constrain the
+generator.
+
+Absolute competitor count, which is what enters the S=k conjunction
+probability (`q^S`, q ≈ absolute count / nc positions), is
+determined by `rate × ncRNA_length`. Same rate 0.21 with ncRNA lengths
+177 vs 281 gives 38 vs 65 competitors — a 1.7× difficulty spread. So
+Requirement 0 needs two independent parameters, not one:
+
+- **`planted_m` and `L` distribution.** Match the T-WT operating point:
+  L = 11, mode `planted_m = 8`, ~86% concentrated at m=8 within [7, 9],
+  zero mass at `m ≥ 10`. V4.2 currently has 45% at m ≥ 9 and 20% at
+  m ≥ 10 (D5d). This is the gap.
+- **ncRNA length distribution.** Sampled from the 6-system natural
+  range: 177–281 nt (T-WT + 5 seekRNA). V4.2's 251 nt sits inside
+  this range, so V4.2's length distribution is not the problem. If a
+  novel family with substantially different ncRNA length is targeted,
+  the range extends accordingly (calibration base grows with n).
+
+The A+ finding pins the rate parameter (analytically, always). The
+D5d finding pins the `planted_m` distribution parameter (T-WT
+experimentally). The ncRNA length parameter is now calibrated to 6
+natural systems' range, up from 1.
+
+**Requirement 0's calibration base:** n = 6 clean ncRNAs for the
+length parameter (T-WT plus seekRNA ISEc11, ISKpn4, ISPst6, ISPa11,
+ISEc21); n = 1 experimentally validated for `planted_m` distribution
+(T-WT operating point). Durrant Supp Table 5's 6 IUPAC consensus
+sequences add another 6 architectures via consensus sampling
+(instantiate each consensus 100× using the position-wise IUPAC codes;
+each instance gives a competitor curve). This 6-consensus expansion
+is a follow-up step measurable in hours; combined with the seekRNA
+architecture axes (guide position within NCR, match-segment
+order/count/spacing, family sTIR presence), it completes the
+architecture side.
+
+Multi-site flanks from seekRNA's `AtaideLab/Targets` pipeline (days)
+and Durrant's `BridgeRNA2024` pipeline (weeks; IS110-only, low
+priority because IS110 is n=1 for architecture) remain deferred; the
+6-system length + 1-system operating-point calibration is a
+substantially stronger base than the earlier n=1, and it is what the
+generator will train against. Building against a single anchor
+without cross-family length calibration hardcodes IS110's specific
 characteristics into the "reality" definition and reintroduces
 exactly the class of overfitting that has been retracted 16 times
 in this project.
@@ -409,8 +429,18 @@ the synthetic diagnostic transfers.
   Replaced by competitor-count formulation.
 - **Requirement 0 in `≤ 10% within argmax ±5` form.** Tie-blind and
   gameable by lowering fidelity. Replaced by `fraction(competitor
-  count ≤ 10) < 5%`, which is tie-robust and jointly constrained by
-  planted intensity + background density.
+  count ≤ 10) < 5%`, then further replaced by the two-parameter
+  form below because the single-threshold form was still T-WT-
+  derived and not architecture-aware.
+- **Requirement 0 as `competitor_count / L ∈ [0.18, 0.25]`.** The A+
+  cross-architecture measurement showed this rate is essentially a
+  mathematical constant (analytically `≈ 0.262` from `2 × N_starts
+  × P(Bin(L, 0.25) ≥ m)`), so requiring a generator to match it is
+  vacuous. Absolute competitor count is the operative quantity for
+  the S=k conjunction, and it varies with ncRNA length at fixed
+  rate. Replaced by two independent constraints: `planted_m/L`
+  distribution (T-WT-calibrated, n=1 experimental anchor) and ncRNA
+  length distribution (6-clean-system-calibrated, 177–281 nt).
 - **The 5-family FP measurement plan** (IS10-R, IS30, IS903, ISAjo2,
   ISLdl1 × Durrant nc): retired as double-null. Any per-family FP
   number derived from this construction has no meaning as a
