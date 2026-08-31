@@ -37,7 +37,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from preprocess.features_structure_v2 import compute_features_v2
+from preprocess.features_structure_v2 import (
+    CHANNEL_GOLD_SIGN, compute_features_v2, p_gold_better,
+)
 from scripts.v5a_framework.match_table import load as load_mt
 
 MT_POS = "/global/scratch/users/kh36969/DL_novel_guide_editor/v5a_framework_cache/durrant_positive"
@@ -200,17 +202,61 @@ def main() -> int:
         return float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
 
     print()
-    print(f"  {'channel':<20s} {'n':>6s} {'gold_med':>10s} {'comp_med':>10s} "
-          f"{'delta_med':>10s} {'MAD':>7s} {'P(d>0)':>8s} {'95% CI Tnp':>18s}")
-    for c in channels:
+    print(f"  {'channel':<20s} {'n':>6s} {'sgn':>4s} {'gold_med':>10s} {'comp_med':>10s} "
+          f"{'delta_med':>10s} {'P(d>0)':>8s} {'P(gold_better)':>15s} {'95% CI Tnp':>18s}")
+    ordered = sorted(channels, key=lambda c: -abs(p_gold_better(summarize(c)['P(delta>0)'], c) - 0.5))
+    for c in ordered:
         s = summarize(c)
         lo, hi = tnp_cluster_ci(c)
-        print(f"  {c:<20s} {s['n']:>6d} {s['gold_med']:>10.3f} {s['comp_med']:>10.3f} "
-              f"{s['median_delta']:>10.3f} {s['MAD']:>7.3f} {s['P(delta>0)']:>8.3f} "
+        pgb = p_gold_better(s['P(delta>0)'], c)
+        sign = CHANNEL_GOLD_SIGN.get(c, 0)
+        print(f"  {c:<20s} {s['n']:>6d} {sign:>+4d} {s['gold_med']:>10.3f} {s['comp_med']:>10.3f} "
+              f"{s['median_delta']:>10.3f} {s['P(delta>0)']:>8.3f} {pgb:>15.3f} "
               f"[{lo:.3f}, {hi:.3f}]")
 
     print()
-    print("  Verdict rule: |P(delta>0) - 0.5| >= 0.15 = material discrimination")
+    print("  Verdict rule: P(gold_better) >= 0.65 = material discrimination")
+    print("  (equivalent to |P(delta>0) - 0.5| >= 0.15 with expected direction accounted for)")
+
+    # 0b: correlation matrix on the 4 channels, at gold and competitor positions
+    from scipy.stats import spearmanr
+    print()
+    print("=== 0b: cross-channel Spearman r on gold + competitor positions ===")
+    channels_ordered = ["dG_open_uL_pn", "E_span_win", "H_pair_win", "p_ss_window"]
+
+    def stack_at(role: str) -> np.ndarray:
+        arrs = []
+        vals = gold_vals if role == "gold" else comp_vals
+        for c in channels_ordered:
+            arrs.append(np.array(vals[c], dtype=np.float64))
+        # Common valid mask across channels
+        stk = np.column_stack(arrs)
+        mask = np.isfinite(stk).all(axis=1)
+        return stk[mask]
+
+    for role in ("gold", "competitor"):
+        stk = stack_at(role)
+        print(f"\n  {role.upper()} positions (n={len(stk)}):")
+        r, _ = spearmanr(stk, axis=0)
+        # r is (4, 4)
+        print(f"    {'':<18s} " + " ".join(f"{c[:12]:>12s}" for c in channels_ordered))
+        for i, c in enumerate(channels_ordered):
+            row = " ".join(f"{r[i, j]:>+12.3f}" for j in range(4))
+            print(f"    {c:<18s} {row}")
+
+    # Report which channels are highly correlated on gold
+    stk_g = stack_at("gold")
+    r_g, _ = spearmanr(stk_g, axis=0)
+    print()
+    print("  Redundancy pairs on gold (|r| > 0.9):")
+    any_red = False
+    for i in range(len(channels_ordered)):
+        for j in range(i + 1, len(channels_ordered)):
+            if abs(r_g[i, j]) > 0.9:
+                print(f"    {channels_ordered[i]}  <->  {channels_ordered[j]}   r = {r_g[i, j]:+.3f}")
+                any_red = True
+    if not any_red:
+        print("    (none — all four channels carry distinct information)")
     return 0
 
 

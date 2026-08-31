@@ -48,6 +48,15 @@ generator baseline the guide length is fixed at L=11. When difficulty
 axes add L in {12, 13, 14}, either add a per-L channel bank or scale
 by L (per-nt normalization already applied on ch1 for that reason).
 
+Sign convention for downstream summaries (2026-08-31, user directive):
+The four channels have DIFFERENT "gold is expected to be higher/lower"
+directions, so raw P(delta>0) is not directly comparable across them.
+Use CHANNEL_GOLD_SIGN (below) to normalize when reporting or when a
+verdict rule like "|P(delta>0) - 0.5| >= 0.15" is applied across
+channels. Never write raw P(delta>0) into a table without also naming
+the expected direction — that misread has cost this project multiple
+times already ([[finding-reconcile-r1-r3]] chain).
+
 Everything runs at global RNAfold parameters — no window, no L
 constraint. On 150-281 nt ncRNAs the cost is ~90-285 ms per sequence
 (pf + bpp; A1 + pf() bench, 2026-08-31), so per-bag folding across 50K
@@ -66,6 +75,28 @@ KT_37C_KCAL_PER_MOL = 0.6156
 
 DEFAULT_GUIDE_LENGTH = 11
 EPS_PAIR_MASS = 1e-8
+
+# Sign convention per channel: +1 = "gold expected higher than random-m
+# competitor"; -1 = "gold expected lower"; 0 = "no strong prior".
+# Item 4.5 (2026-08-31) confirms these directions on 265 Durrant pairs.
+# For a symmetric verdict rule use P(gold_better) = 0.5 + sign*(P(delta>0) - 0.5).
+CHANNEL_GOLD_SIGN: dict[str, int] = {
+    "dG_open_u1":    -1,   # dG open cost; low = accessible
+    "dG_open_uL_pn": -1,   # per-nt open cost; low = accessible
+    "E_span_win":    -1,   # partner distance; short-range partners for internal loops
+    "H_pair_win":    +1,   # partner entropy; diffuse = internal loop
+    "p_ss_window":   +1,   # window mean P_ss; high = accessible
+}
+
+
+def p_gold_better(delta_gt_0: float, channel: str) -> float:
+    """Map raw P(delta > 0) to P(gold matches expected direction)."""
+    sign = CHANNEL_GOLD_SIGN.get(channel, 0)
+    if sign == 0:
+        return abs(delta_gt_0 - 0.5) + 0.5   # unsigned |shift|
+    if sign > 0:
+        return delta_gt_0
+    return 1.0 - delta_gt_0
 
 
 @dataclass(frozen=True)
