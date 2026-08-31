@@ -1,0 +1,57 @@
+# V4.2 counterfactual negative-generation config.
+#
+# Contract: every negative is a paired counterfactual of a specific V4.2
+# positive record. Only the profile-declared causal axis differs; every
+# nuisance variable (flank_len, n_ncs, NC lens, bag size, layout) is
+# byte-identical by construction and asserted at emit time.
+#
+# Loader is REQUIRED to consume only inputs.flank + inputs.noncoding_regions.
+# Fields in labels.* (except is_positive) and generator_metadata.* are for
+# audit only and must not reach the model tensor.
+
+version: v4.2_counterfactual
+
+positive_source: /global/scratch/users/kh36969/DL_novel_guide_editor/data/positives_v42.jsonl
+output_dir: /global/scratch/users/kh36969/DL_novel_guide_editor/data/negatives_v42_counterfactual
+
+seed: 0
+max_bags: null           # null → use all bags; int → cap for smoke tests
+
+profiles:
+  paired_shuffle:
+    enabled: true
+    weight: 1.0
+    # No per-profile params. Contract: allowed_changes = {flank_content}
+
+  wrong_orientation:
+    enabled: true
+    weight: 1.0
+    flip_frac: 0.4       # fraction of sites per bag whose guide-orient is flipped
+
+  wrong_position:
+    enabled: true
+    weight: 1.0
+    jitter_min: 15       # min bp between old and new target position
+
+  wrong_length:
+    enabled: true
+    weight: 1.0
+    # Contract: allowed_changes = {nc_content}. Guide slot is filled with
+    # random DNA of the same slot width; new effective length ranges 4..16
+    # differing from L by >= 2.
+
+  wrong_structure_role:
+    enabled: true
+    weight: 1.0
+    min_shift: 20        # min bp between old and new guide position inside NC
+
+audit:
+  auto_run: true                 # run the shortcut audit after generation
+  n_per_class_sample: 1500
+  fail_on_layout_leak: true
+  layout_leak_threshold: 0.60    # any per-profile layout AUROC > this fails
+  layout_probes:                 # feature groups that MUST stay below the threshold
+    - layout
+    - flank_marginal
+    - nc_marginal
+    - combined_marginal

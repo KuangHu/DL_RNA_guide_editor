@@ -1,0 +1,28 @@
+# Generated / large artifacts
+checkpoints/
+logs/
+shortcut_features/
+shortcut_features_v1/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Package metadata
+*.egg-info/
+build/
+dist/
+
+# Virtual envs / secrets
+.env
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
