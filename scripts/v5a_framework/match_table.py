@@ -47,6 +47,35 @@ DEFAULT_LS: tuple[int, ...] = (9, 10, 11, 12)
 EXCL_WIDTHS: tuple[int, ...] = (0, 2, 8, 9, 12)
 
 
+# Family TSD width table. resolve_excl_w() dispatches variant.py's excl_w
+# lookup by flank-source family — Durrant (IS110-family) resolves to 0 (no
+# characteristic TSD), the five DDE families resolve to their canonical
+# TSD length. The runtime assertion in build_e_positive_diagonal /
+# build_e_negative refuses any flank source not registered here.
+FAMILY_TSD_WIDTH: dict[str, int] = {
+    "durrant_positive": 0,
+    "IS10-R": 9,
+    "IS30":   2,
+    "IS903":  9,
+    "ISAjo2": 0,
+    "ISLdl1": 8,
+}
+
+
+def resolve_excl_w(flank_source_family: str) -> int:
+    """Return the excl_w for a given flank source family.
+
+    Raises ValueError if the family isn't registered — this catches the
+    "silently defaulted to 0" class of bug (the one that would make an
+    IS10-R E-table look like it had no TSD confound).
+    """
+    if flank_source_family not in FAMILY_TSD_WIDTH:
+        raise ValueError(
+            f"unknown flank_source_family: {flank_source_family!r}. "
+            f"Register it in FAMILY_TSD_WIDTH (module match_table.py).")
+    return FAMILY_TSD_WIDTH[flank_source_family]
+
+
 @dataclass(frozen=True)
 class SiteRecord:
     """One insertion site.
