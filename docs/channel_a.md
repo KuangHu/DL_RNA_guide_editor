@@ -223,27 +223,66 @@ neither.
 
 Two identified real-data sources fill part of the gap:
 
-- **1,054 IS110 recombinases (Durrant supplementary).** These
-  provide a calibration target for what "real difficulty" looks
-  like across natural hosts and genomic backgrounds. The concrete
-  measurements needed:
-    - competitor-count distribution at L=11 across the 1,054 systems
-    - per-site match rate `p` at gold vicinity
-    - cross-site position spread (median, p95)
-  These calibrate generator Requirement 0 (below) from n = 1 to
-  n = 1,055. Multi-site flanks are still required for coherence
-  measurement; if not available in the supplementary, they must be
-  extracted by finding the same recombinase in multiple genomes.
-- **seekRNA (Siddiquee et al., Nat Commun 2024).** Provides 4
-  IS1111 systems + 1 IS110 system with validated targets. IS1111's
-  architecture differs from IS110 in specific, testable ways: the
-  order of the upstream and downstream match segments is reversed,
-  the NCR sits downstream of the ORF rather than upstream, and an
-  sTIR is present. This is the **held-out generalization test**:
-  Channel A trained/selected on IS110 architecture should still fire
-  on IS1111 under the correct family-agnostic operation (upstream +
-  downstream order-invariant conjunction). The reversed order is a
-  binary architectural fingerprint the model must not depend on.
+- **~10–11 ncRNA sequences from published supplementary tables.**
+  Durrant Supp Table 5 provides consensus bridge RNA sequences with
+  structure for 6 IS110/IS1111 family members (`ISPpu10`, `ISAar29`,
+  `ISHne5`, and 3 others). seekRNA Supp Table 1 (Siddiquee et al.,
+  Nat Commun 2024) provides 5 wet-lab-characterized systems (4
+  IS1111 + 1 IS110): `ISEc11`, `ISKpn4`, `ISPst6`, `ISPa11`,
+  `ISEc21`, NCR lengths 74–96 nt. Some overlap likely. These do not
+  include per-recombinase multi-site flanks, but they carry the
+  architecture axes needed for the calibration approach below.
+- **Durrant's 1,054-recombinase supplementary table is
+  phylogenetic metadata only** (6 columns: hashed Protein ID,
+  ISfinder ID, Kingdom, Phylum, RuvC 80-aa alignment fragment,
+  Tnp 80-aa alignment fragment). It contains no host genome
+  accession, no chromosomal coordinates, no per-element bridge RNA
+  sequence, no LTG/RTG. This pool is **not** a calibration set as
+  such — per-recombinase data (bridge RNA, target site, multi-site
+  flanks) requires re-running Durrant's extraction pipeline
+  (`hsulab-arc/BridgeRNA2024`) against NCBI + metagenomics reference
+  databases, a weeks-scale engineering commitment that produces
+  IS110 material only and therefore does not address architecture
+  generalization.
+- **seekRNA architecture axes are usable now.** The 5 seekRNA
+  systems span testable architectural differences relative to IS110:
+  reversed order of upstream vs downstream match segments on the
+  ncRNA (main Fig 7a; the binary architectural fingerprint the
+  detector must not depend on); NCR downstream of the ORF rather
+  than upstream; presence of sTIR; ncRNA lengths 74–96 nt against
+  IS110 bridge RNA lengths ~150–250 nt — a 2–3× search-space spread
+  that lets us test whether `competitor_count` really is
+  architecture-invariant. The seekRNA `AtaideLab/Targets` pipeline
+  (GPL-3.0) can regenerate per-system genomic insertion sites in
+  days, providing the held-out generalization test on IS1111.
+
+**Background competitor-density curves — the immediate calibration
+approach.** `competitor_count` factors:
+```
+competitor_count = f(planted_strength, background_match_density)
+```
+Only `planted_strength` requires observed real insertion sites (which
+the ~11 supplementary ncRNAs do not carry). `background_match_density`
+does not: it is the number of positions on a given ncRNA where a
+random L-mer from a real bacterial flank hits `m ≥ k`. This is
+computable directly from any random real bacterial sequence, and
+this project already has 2,763 negative-family flanks (`IS10-R`,
+`IS30`, `IS903`, `ISAjo2`, `ISLdl1`), all real bacterial sequences,
+loaded on disk. Pairing each of the ~11 published ncRNAs with random
+draws from the 2,763-flank pool yields, per ncRNA, a background
+competitor-density curve `competitor_count(m)` for `m ∈ {6..12}`.
+That is the difficulty-dominating factor in Requirement 0.
+
+The "real planted_m" factor remains n = 1 — Durrant T-WT's
+experimentally validated wild-type operating point (median m = 8 at
+L = 11, 86% concentrated there). Combined with 11 architecture-
+diverse background curves, the calibration base becomes:
+"11 ncRNAs' background competitor density × 1 validated wild-type
+operating point," with a built-in cross-architecture invariance
+test (2–3× ncRNA length spread, order-inversion between families):
+if two systems 3× apart in length show equivalent detector
+performance at matched competitor count, competitor count is
+architecture-invariant, as needed. Cost: several hours.
 
 Real data provides **calibration and holdout**, not training and
 selection. Training on any single real family alone would learn its
@@ -265,10 +304,12 @@ Training and selection require a synthetic generator whose role is
   orientation convention; N_nc (1, 2, 3); TSD presence × width ×
   spatial relation to guide target; secondary-structure context
   (with / without 5' stem-loop).
-- **Difficulty axes matched** to a calibration distribution from
-  the 1,054-system pool: competitor-count distribution at the
-  target detector L; cross-site position spread; per-site hit rate
-  `p`; background base composition.
+- **Difficulty axes matched** to the calibration distribution
+  from the background-curve method above (each of the ~11
+  supplementary ncRNAs paired with random real bacterial flanks
+  from the 2,763-flank negative-family corpus, giving
+  `competitor_count(m)` per ncRNA for `m ∈ {6..12}`), pinned at
+  the T-WT wild-type operating point (median m = 8 at L = 11).
 
 The orthogonality is what makes this useful. Difficulty controlled
 by competitor-count is family-agnostic; every architecture axis can
@@ -300,12 +341,26 @@ fraction(competitor_count ≤ 10) < 5%
   task).
 
 **Requirement 0's calibration base is currently n = 1 natural bridge
-RNA (T-WT).** Expanding to n = 1,055 via the 1,054 IS110 pool is the
-immediate next step, and must precede any synthetic sample
-generation. Building the generator against a n=1 target hardcodes
-IS110's specific characteristics into the "reality" definition and
-reintroduces exactly the class of overfitting that has been retracted
-16 times in this project.
+RNA (T-WT).** Expanding it does NOT come from the 1,054-recombinase
+Durrant table (that table is phylogenetic metadata only, no per-
+recombinase sequence or flank). Immediate next step: compute
+background competitor-density curves on the ~11 supplementary
+ncRNAs (Durrant Supp Table 5 + seekRNA Supp Table 1) paired with
+the 2,763 real bacterial flanks already loaded. Cost: several
+hours. Gives 11 architecturally-diverse background curves with a
+2–3× ncRNA length spread that lets us test whether competitor
+count is architecture-invariant — the key claim the generator's
+orthogonality relies on. The T-WT operating point remains the sole
+validated planted_m anchor. Multi-site flanks from seekRNA's
+`AtaideLab/Targets` pipeline (days) and from Durrant's
+`BridgeRNA2024` pipeline (weeks, IS110-only, lower priority
+because IS110 is n=1 for architecture) come later. All of this
+must precede any synthetic sample generation. Building the
+generator against a single T-WT-operating-point target without
+the cross-architecture invariance check hardcodes IS110's specific
+characteristics into the "reality" definition and reintroduces
+exactly the class of overfitting that has been retracted 16 times
+in this project.
 
 ### Diagnostic byproduct: architecture-axis stratification
 
