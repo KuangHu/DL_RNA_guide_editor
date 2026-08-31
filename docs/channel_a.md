@@ -36,20 +36,60 @@ and plateau structure.
 For the historical baseline configuration
 (`fixed_L11_m8`, τ=0, S=5, `tsd_handling=off`), on the 22 detected Tnps:
 
-| statistic | value | denominator |
-|---|---:|---|
-| Coverage | 33.85% (22/65) | N_tnp_total |
-| Plateau width (median) | 1 nt | detected Tnps |
-| Plateau width (mean) | 1.05 nt | detected Tnps |
-| contains_gold | 90.9% (20/22) | detected Tnps |
-| centroid_dist to gold (median) | 0.0 nt | detected Tnps |
-| centroid_dist to gold (mean) | 1.02 nt | detected Tnps |
+| statistic | value | denominator | correctness criterion |
+|---|---:|---|---|
+| Coverage | 33.85% (22/65) | N_tnp_total | detection emitted |
+| Plateau width (median) | 1 nt | detected Tnps | — (descriptive) |
+| Plateau width (mean) | 1.05 nt | detected Tnps | — (descriptive) |
+| centroid_dist to gold (median) | 0.0 nt | detected Tnps | — (descriptive) |
+| centroid_dist to gold (mean) | 1.02 nt | detected Tnps | — (descriptive; dominated by one 21-nt outlier) |
 
 The plateau structure is the honest form of the "single-nucleotide
-precision" claim. In 20 of 22 detections the detector produces a
-1-nt-wide primary peak that lands on the annotated `gold_nc`; the
-remaining two are one 2-wide plateau centered on gold and one
-off-target detection.
+precision" claim. On 19 of 22 detections the detector produces a
+1-nt-wide primary peak exactly at the annotated `gold_nc`; on one
+detection it is a 2-wide plateau centered on gold; on one detection
+the peak is at gold + 1 (biologically real 1-nt offset in an
+RTG-variant Tnp); on one detection the peak is 21 nt from gold.
+
+### Three correctness criteria, three counts on the same 22 detections
+
+The numbers below use three DIFFERENT correctness criteria on the same
+run and are NOT interchangeable — a reader tempted to reconcile them
+arithmetically will get a wrong answer.
+
+| number | criterion | value | denominator |
+|---|---|---:|---|
+| Tnp-level PPV | IoU([peak, peak+L), [gold_nc, gold_nc+L)) ≥ 0.5 | **95.5% (21/22)** | detected Tnps |
+| contains_gold_frac | `gold_nc ∈ plateau_positions` (position-strict) | **90.9% (20/22)** | detected Tnps |
+| exact_le_1 | `\|plateau_centroid − gold_nc\| ≤ 1` | **95.5% (21/22)** | detected Tnps |
+| exact_eq_0 | `\|plateau_centroid − gold_nc\| == 0` | **86.4% (19/22)** | detected Tnps |
+
+The three "detection is correct" counts (95.5% / 90.9% / 95.5%) differ
+by one Tnp each, on the same 22 detections, because the criteria
+answer different questions:
+
+- **IoU ≥ 0.5** — is the emitted window's overlap with the annotated
+  target above half. Coarse, standard for slot-match tasks.
+- **contains_gold** — does the primary plateau STRICTLY include the
+  annotated gold position. Fails when the plateau is one nt off, even
+  if that one nt would be perfectly acceptable under IoU.
+- **exact_le_1** — is the plateau centroid within 1 nt of gold. Under
+  gold-blind centroid this is stricter than IoU on plateau-off-by-one
+  cases and less strict than contains_gold on plateau-adjacent cases.
+
+For the run at hand, one Tnp (`bag001`) has a width-1 plateau at
+position 50 with gold at 49: IoU passes (window overlap 10/11),
+contains_gold fails (49 ∉ {50}), exact_le_1 passes (dist = 1). One
+Tnp (`bag000`) has a width-1 plateau at position 70 with gold at 49:
+all three criteria fail. One Tnp (`bag010`) has a width-2 plateau at
+{49, 50} with gold at 49: all three pass, but the centroid 49.5 fails
+exact_eq_0.
+
+The 95.5% (Tnp-level PPV) and 95.5% (exact_le_1) coincide accidentally
+on this run — Tnp-level PPV counts bag001 and bag010 as correct, fails
+bag000; exact_le_1 counts bag001 and bag010 as correct, fails bag000.
+The three-way split becomes visible at any τ > 0 or any different
+peak_min_dist.
 
 ### Exact-hit rate — four numbers, one table
 
