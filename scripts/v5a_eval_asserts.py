@@ -30,15 +30,28 @@ class MetricCondition:
     """Every condition under which a numeric statistic was computed.
     Any two statistics compared as a ratio or difference must have identical
     tuples EXCEPT for the one dimension being deliberately varied.
+
+    The 14-field tuple closes the metric-definition set. Each field addresses
+    a recurrence family from the diagnostic phase (15 documented same-shape
+    errors); each is a dimension where "silent change" caused a Category-A
+    ratio bug at some point. safe_ratio blocks silent change on any of them.
     """
-    match_rule:        str    # e.g. "strict_WC" | "wobble" | "SW_gapped" | "IoU_correct"
-    null_model:        str    # e.g. "unshuffled_intra_family" | "dinuc_shuffled_flanks" | "Bin_indep"
-    coordinate_system: str    # e.g. "absolute_nc" | "normalized_nc" | "sequence_aligned"
-    targeting_intact:  bool
-    tie_break:         str    # e.g. "average_rank" | "optimistic" | "pessimistic"
-    denominator:       str    # e.g. "in_pool" | "full_panel" | "conditional_on_hit"
-    n_sites_per_tnp:   int    # 5 for Durrant; must match on both sides of every ratio.
-                              # Prevents 5-of-5 vs 5-of-16 architectural inflation.
+    match_rule:            str   # "strict_WC" | "wobble" | "SW_gapped" | "IoU_correct"
+    null_model:            str   # "unshuffled_intra_family" | "dinuc_shuffled_flanks" | "Bin_indep"
+    coordinate_system:     str   # "absolute_nc" | "normalized_nc" | "sequence_aligned"
+    targeting_intact:      bool
+    tie_break:             str   # "average_rank" | "optimistic" | "pessimistic" | "centroid"
+    denominator:           str   # "in_pool" | "full_panel" | "conditional_on_hit" | "N_tnp" | "N_detections"
+    n_sites_per_tnp:       int   # 5 for Durrant; catches 5-of-5 vs 5-of-16 architectural inflation
+
+    # Framework-era additions (v5a_framework):
+    site_cap:              int   # 5 for Durrant positive; 10 for negatives; picked with fixed seed random draw
+    peak_convention:       str   # "tnp_level" | "peak_level" — Tnp-level canonical for cross-tau
+    peak_min_dist:         int   # local-max window radius (5 in the anchor); changes plateau merging
+    exact_tolerance:       int   # 0 | 1 — units of nt from gold for "exact"; centroid + ==0 requires odd-width plateau
+    plateau_summarization: str   # "centroid" | "any" | "all" — primary-peak rule under S ties
+    flank_source:          str   # "durrant_self" | "durrant_shuffled" | "IS10-R" | ... — the 7-way negative axis
+    flank_grouping:        str   # "same_tnp_random5" | "same_tnp_exactly5" | "cross_tnp_random5"
 
     def diff(self, other: "MetricCondition") -> list[str]:
         return [f.name for f in fields(self)
@@ -96,7 +109,10 @@ def _example_v1pp_would_have_caught():
     a = Metric("V1''(a) REAL", 0.354, MetricCondition(
         match_rule="strict_WC", null_model="unshuffled_intra_family",
         coordinate_system="absolute_nc", targeting_intact=True,
-        tie_break="average_rank", denominator="in_pool", n_sites_per_tnp=5))
+        tie_break="average_rank", denominator="in_pool", n_sites_per_tnp=5,
+        site_cap=5, peak_convention="tnp_level", peak_min_dist=5,
+        exact_tolerance=1, plateau_summarization="centroid",
+        flank_source="durrant_self", flank_grouping="same_tnp_exactly5"))
     b = Metric("V1''(b) REAL_shuffled_own_flanks", 0.0154, MetricCondition(
         match_rule="strict_WC", null_model="unshuffled_intra_family",
         coordinate_system="absolute_nc", targeting_intact=False,   # ← changed

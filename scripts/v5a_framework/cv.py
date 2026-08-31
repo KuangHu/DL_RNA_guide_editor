@@ -111,9 +111,19 @@ def score_variant(mt_pos: MatchTable, mt_negs: dict[str, MatchTable],
                 n_dets_correct += 1
             if abs(pk.position - gold_nc) == 0:
                 n_dets_exact += 1
-    ppv = as_ratio_ci(n_dets_correct, max(1, n_dets), "N_detections")
-    exact_dets = Ratio(n_dets_exact, max(1, n_dets), "N_detections")
-    exact_tnps = Ratio(exact, n_pos, "N_tnp_positive")
+    # Placeholder Tnp-level PPV: needs redo in step 3 with tnps_with_correct denom.
+    # Placeholder peak-level PPV: what we have here.
+    ppv_peak = as_ratio_ci(n_dets_correct, max(1, n_dets), "N_detections")
+    ppv_tnp = as_ratio_ci(iou_ok, max(1, det), "N_detected_Tnps")
+
+    # exact under both tolerances / both denominators.
+    # NOTE: this is the peak-position-based exact, not the resolution-3-tuple
+    # exact from summarize_resolution — step 3 will wire in the plateau-aware
+    # centroid computation; here we emit the closest available approximations.
+    exact_eq0_dets = Ratio(n_dets_exact, max(1, n_dets), "N_detections")
+    exact_eq0_tnps = Ratio(exact, n_pos, "N_tnp_positive")
+    exact_le1_dets = Ratio(n_dets_exact, max(1, n_dets), "N_detections")  # same for now
+    exact_le1_tnps = Ratio(exact, n_pos, "N_tnp_positive")                 # same for now
 
     # per-family FP
     per_fam: dict[str, RatioCI] = {}
@@ -126,9 +136,12 @@ def score_variant(mt_pos: MatchTable, mt_negs: dict[str, MatchTable],
         dataset="joint",
         n_perm=0, seed=0,
         coverage=coverage,
-        ppv=ppv,
-        exact_of_tnps=exact_tnps,
-        exact_of_detections=exact_dets,
+        ppv_tnp_level=ppv_tnp,
+        ppv_peak_level=ppv_peak,
+        exact_eq_0_of_tnps=exact_eq0_tnps,
+        exact_le_1_of_tnps=exact_le1_tnps,
+        exact_eq_0_of_dets=exact_eq0_dets,
+        exact_le_1_of_dets=exact_le1_dets,
         ratio_vs_nonguided=per_fam,
         condition_tag=spec.key(),
     )

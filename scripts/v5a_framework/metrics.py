@@ -112,6 +112,103 @@ def tnp_clustered_ratio_bootstrap(
     return (point, lo, hi)
 
 
+# ---------- nested bootstrap (outer Tnp / inner random-5) ----------
+
+def nested_bootstrap_ratio_ci(
+    per_tnp_scoring: "callable",
+    tnp_ids: list[str],
+    n_inner_draws: int = 20,
+    n_outer_boot: int = 1000,
+    seed: int = 0,
+    alpha: float = 0.05,
+) -> tuple[float, float, float]:
+    """Two-level bootstrap that propagates BOTH sources of variance:
+      - outer: resample Tnps (with replacement), captures Tnp-clustered variance
+      - inner: for each drawn Tnp, pick one of `n_inner_draws` random-5 indices
+               (captures within-Tnp sampling variance from the 5-flank subsample)
+
+    `per_tnp_scoring(tnp_id, draw_idx) -> tuple[num, denom]` — returns a
+    (numerator, denominator) pair for that Tnp under the given inner draw.
+    The aggregate ratio is sum(num) / max(1, sum(denom)).
+
+    Returns (point_estimate, ci_lo, ci_hi).
+
+    Correct construction per the 'not a second variance source' correction:
+    the k=20 inner draws do NOT get compounded with an outer Tnp-clustered
+    bootstrap; instead, one inner draw is picked per drawn Tnp per outer
+    iteration, so both variances propagate exactly once.
+    """
+    rng = np.random.default_rng(seed)
+    N = len(tnp_ids)
+
+    # Point estimate: use draw 0 for each Tnp
+    nums0 = np.zeros(N); dens0 = np.zeros(N)
+    for i, t in enumerate(tnp_ids):
+        n, d = per_tnp_scoring(t, 0)
+        nums0[i] = n; dens0[i] = d
+    point = float(nums0.sum() / max(1, dens0.sum()))
+
+    # Outer + inner bootstrap
+    boots = np.empty(n_outer_boot)
+    for b in range(n_outer_boot):
+        idx = rng.integers(0, N, size=N)
+        inner = rng.integers(0, n_inner_draws, size=N)
+        num_sum = 0.0; den_sum = 0.0
+        for k in range(N):
+            n, d = per_tnp_scoring(tnp_ids[idx[k]], int(inner[k]))
+            num_sum += n; den_sum += d
+        boots[b] = num_sum / max(1e-9, den_sum)
+    lo = float(np.quantile(boots, alpha / 2))
+    hi = float(np.quantile(boots, 1 - alpha / 2))
+    return (point, lo, hi)
+
+
+# ---------- 3-tuple resolution report + both exact tolerances ----------
+
+@dataclass(frozen=True)
+class ResolutionReport:
+    """Per-detection resolution summary that replaces the single 'exact-hit'
+    percentage. Reports what plateau structure the detector produces.
+
+    plateau_width       nt count of positions sharing the primary S_all value
+    contains_gold       whether the plateau contains gold_nc (bool)
+    centroid_dist       nt distance from plateau centroid to gold_nc
+    """
+    tnp_id: str
+    plateau_width: int
+    contains_gold: bool
+    centroid_dist: float
+    primary_position: float   # centroid (may be non-integer for even plateaus)
+    gold_nc: int
+
+
+def summarize_resolution(reports: list[ResolutionReport]) -> dict:
+    """Aggregate a list of ResolutionReports into a distributional summary.
+
+    Returns:
+      n_detections, plateau_width_median, plateau_width_mean,
+      contains_gold_frac, centroid_dist_median, centroid_dist_mean,
+      exact_eq_0 (fraction with centroid_dist == 0),
+      exact_le_1 (fraction with centroid_dist <= 1).
+    """
+    if not reports:
+        return {"n_detections": 0}
+    widths = np.array([r.plateau_width for r in reports])
+    contains = np.array([r.contains_gold for r in reports], dtype=bool)
+    dists = np.array([r.centroid_dist for r in reports])
+    return {
+        "n_detections": len(reports),
+        "plateau_width_median": float(np.median(widths)),
+        "plateau_width_mean": float(widths.mean()),
+        "plateau_width_p95": float(np.percentile(widths, 95)),
+        "contains_gold_frac": float(contains.mean()),
+        "centroid_dist_median": float(np.median(dists)),
+        "centroid_dist_mean": float(dists.mean()),
+        "exact_eq_0": float((dists == 0).mean()),
+        "exact_le_1": float((dists <= 1).mean()),
+    }
+
+
 # ---------- primary report ----------
 
 @dataclass(frozen=True)
@@ -127,9 +224,19 @@ class MetricReport:
     seed: int
 
     coverage: Ratio                 # detected Tnps / total Tnps in dataset
-    ppv: RatioCI                    # IoU >= 0.5 / detections; positive-set only
-    exact_of_tnps: Ratio            # best-peak within 1 nt of gold / N_tnp
-    exact_of_detections: Ratio      # distance 0 / N_detections
+    ppv_tnp_level: RatioCI          # Tnps with correct peak / detected Tnps  (canonical for P3)
+    ppv_peak_level: RatioCI         # correct peaks / total peaks (diagnostic; tau-comparable only within tau)
+
+    # exact-hit reported under BOTH tolerances + BOTH denominators (four numbers).
+    # Under gold-blind centroid, dist == 0 is unreachable on even-width plateaus,
+    # so exact_eq_0 is strictly stricter than exact_le_1 and both must ship.
+    exact_eq_0_of_tnps: Ratio       # denom N_tnp    -- Tnps with centroid_dist == 0
+    exact_le_1_of_tnps: Ratio       # denom N_tnp    -- Tnps with centroid_dist <= 1
+    exact_eq_0_of_dets: Ratio       # denom N_dets   -- detections with centroid_dist == 0
+    exact_le_1_of_dets: Ratio       # denom N_dets   -- detections with centroid_dist <= 1
+
+    # Detector resolution — the 3-tuple that replaces the single "exact-hit" percentage.
+    resolution: dict = field(default_factory=dict)   # from summarize_resolution(...)
 
     # Null-relative comparisons
     ratio_vs_shuffled: RatioCI | None = None            # random-flank null
@@ -160,11 +267,20 @@ class MetricReport:
             "dataset": self.dataset,
             "coverage": self.coverage.value,
             "coverage_denom": f"{self.coverage.num}/{self.coverage.denom}",
-            "ppv": self.ppv.value,
-            "ppv_ci": f"[{self.ppv.lo:.3f}, {self.ppv.hi:.3f}]",
-            "exact_of_tnps": self.exact_of_tnps.value,
-            "exact_of_dets": self.exact_of_detections.value,
+            "ppv_tnp": self.ppv_tnp_level.value,
+            "ppv_tnp_ci": f"[{self.ppv_tnp_level.lo:.3f}, {self.ppv_tnp_level.hi:.3f}]",
+            "ppv_peak": self.ppv_peak_level.value,
+            "ppv_peak_ci": f"[{self.ppv_peak_level.lo:.3f}, {self.ppv_peak_level.hi:.3f}]",
+            "exact_eq0_tnp": self.exact_eq_0_of_tnps.value,
+            "exact_le1_tnp": self.exact_le_1_of_tnps.value,
+            "exact_eq0_dets": self.exact_eq_0_of_dets.value,
+            "exact_le1_dets": self.exact_le_1_of_dets.value,
         }
+        # 3-tuple resolution (from summarize_resolution)
+        if self.resolution:
+            row["plateau_width_median"] = self.resolution.get("plateau_width_median")
+            row["contains_gold_frac"]   = self.resolution.get("contains_gold_frac")
+            row["centroid_dist_median"] = self.resolution.get("centroid_dist_median")
         if self.ratio_vs_shuffled:
             row["ratio_shuf"] = self.ratio_vs_shuffled.value
             row["ratio_shuf_ci"] = f"[{self.ratio_vs_shuffled.lo:.2f}, {self.ratio_vs_shuffled.hi:.2f}]"
