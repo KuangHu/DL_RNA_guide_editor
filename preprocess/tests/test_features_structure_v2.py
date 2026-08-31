@@ -96,6 +96,8 @@ def main() -> int:
           f"n_nan={int(np.isnan(feats.E_span_win).sum())} vs expected {int(expected_nan.sum())}")
     check("H_pair_win NaN pattern matches pair-mass",
           h_nan_ok)
+    check("windowed_valid mask matches NaN pattern",
+          np.array_equal(feats.windowed_valid, ~expected_nan))
 
     # D5 anchor: gold window should be in the top ~30 by P_ss window mean
     p_ss = feats.p_ss

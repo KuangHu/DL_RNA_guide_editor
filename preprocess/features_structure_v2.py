@@ -73,13 +73,22 @@ class StructureFeaturesV2:
     """Per-position BPP-derived structural feature bundle for one ncRNA.
 
     Shapes:
-        dG_open_u1        (nc_len,)
-        dG_open_uL_pn     (nc_len - L + 1,)  — window-start indexed
-        E_span_win        (nc_len - L + 1,)  — NaN where window all unpaired
-        H_pair_win        (nc_len - L + 1,)  — NaN where window all unpaired
-        bpp               (nc_len, nc_len)   — symmetric, for downstream use
-        p_ss              (nc_len,)          — P(unpaired) per position
-        ensemble_energy   scalar             — from fc.pf()
+        dG_open_u1        (nc_len,)              — always defined
+        dG_open_uL_pn     (nc_len - L + 1,)      — always defined
+        E_span_win        (nc_len - L + 1,)      — NaN where window pair mass < eps
+        H_pair_win        (nc_len - L + 1,)      — NaN where window pair mass < eps
+        windowed_valid    (nc_len - L + 1,) bool — True where E_span/H_pair are defined
+        bpp               (nc_len, nc_len)       — symmetric BPP matrix
+        p_ss              (nc_len,)              — P(unpaired) per position
+        ensemble_energy   scalar
+
+    NaN convention (user directive 2026-08-31): E_span_win and H_pair_win
+    return NaN for windows with negligible pair mass (a meaningful signal:
+    the window is entirely unpaired). Downstream tensor code must pair
+    every use of these channels with `windowed_valid` — fill NaN with any
+    finite sentinel (0.0 is fine) AND concatenate `windowed_valid` as a
+    mask channel. Silently coercing NaN to 0 would destroy the "no
+    partners here" information the NaN encodes.
     """
     nc_length: int
     guide_length: int
@@ -87,6 +96,7 @@ class StructureFeaturesV2:
     dG_open_uL_pn: np.ndarray
     E_span_win: np.ndarray
     H_pair_win: np.ndarray
+    windowed_valid: np.ndarray
     bpp: np.ndarray
     p_ss: np.ndarray
     ensemble_energy: float
@@ -234,6 +244,8 @@ def compute_features_v2(seq: str, guide_length: int = DEFAULT_GUIDE_LENGTH
     H_per_pos, pair_mass_h = _per_position_pair_entropy(bpp)
     H_pair_win = _window_weighted_mean(H_per_pos, pair_mass_h, guide_length)
 
+    windowed_valid = ~np.isnan(E_span_win)
+
     return StructureFeaturesV2(
         nc_length=n,
         guide_length=guide_length,
@@ -241,6 +253,7 @@ def compute_features_v2(seq: str, guide_length: int = DEFAULT_GUIDE_LENGTH
         dG_open_uL_pn=dg_uL_pn,
         E_span_win=E_span_win,
         H_pair_win=H_pair_win,
+        windowed_valid=windowed_valid,
         bpp=bpp,
         p_ss=p_ss,
         ensemble_energy=ensemble_energy,
