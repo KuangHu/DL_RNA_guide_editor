@@ -1,240 +1,391 @@
-# Channel A — Joint-Significance Coherence Detector
+# Channel A — Cross-Site Coherence Detector for RNA-Guided Editors
 
-A no-training, no-family-specific-tuning coordinate detector for
-RNA-guided editors observed as ≥5 candidate insertion sites. Ships as a
-stand-alone diagnostic; does not require the downstream V5A model.
+## Why the method exists
+
+In real IS110 target-site data, the guide–target match is **not the
+strongest match** at any individual insertion site. It becomes visible
+only through **cross-site consistency**: the same guide-adjacent nc
+position produces above-threshold matches across multiple observed
+insertions of the same transposase, even though at every one of those
+sites individually there is some *other* nc position with a stronger
+match. **Any statistic that first collapses each site to a single best
+candidate — including but not limited to argmax, top-K, ranked
+per-site models, and per-site regression on match features — is
+bounded below the signal by construction.** Channel A is a
+conjunction over thresholded per-site events, and this is why it works
+where the earlier per-site selectors in this project (`raw_m`,
+`length_pen`, within-pool z, V5A-3a's learned selector) all plateaued
+between MRR 0.086 and 0.150.
+
+The direct evidence is in the framework tests:
+
+- On the sole natural wild-type bridge RNA in the Durrant benchmark
+  (34 evaluation bags of `T-WT_D-WT`), Channel A detects 20/34 bags
+  (58.8%) with the sensitivity numbers below. Yet the per-site
+  argmax on nc lands in the gold neighborhood [45, 54] with a
+  **median of 0 sites per bag** (`test_tau0_anchor.py`,
+  `d5b_argmax_discriminator.py`). Detection comes from the S=5
+  conjunction, not from any per-site extremum.
+- Per-site `m` at the gold position on T-WT (L=11) has **mean 7.94**
+  and is *tied* by other nc positions **100% of the time** (0/170
+  sites have the planted position as sole max;
+  `d5e_competitor_count.py`). The signal is only extractable by
+  requiring 5 sites to agree above threshold at the same nc
+  coordinate.
+
+Everything below is derived from this structural fact, or from what
+the corpus can and cannot say given it.
 
 ## Method
 
-**Mode 1 — min-E (recommended default).** For each transposase T with S
-sites sharing one non-coding region (ncRNA):
+**Mode 2 — m-threshold, fixed L = 11, m ≥ 8, S = 5.** For each
+transposase with 5 candidate insertion sites sharing an ncRNA:
 
-1. For each nc position p and each L ∈ {9, 10, 11, 12}:
-   - `hits(p, L, s_i) = m_max`, the max match count across all flank
-     positions for that L-window starting at p in site i's flank.
-   - `E(p, L, s_i) = N_windows(L) · P(Bin(L, 0.25) ≥ m_max)`.
-2. `min-E(p, s_i) = min` over L of E(p, L, s_i).
-3. `site_hit(p, s_i) = 1` iff `min-E(p, s_i) < 4.0`.
-4. `Coherence(p) = Σ_i site_hit(p, s_i)`; optionally apply a Gaussian
-   kernel over p with τ ∈ [0, 5].
-5. Output = positions where `Coherence(p) = S` (all sites agree,
-   kernel-smoothed).
+1. For each nc position p, for each site s_i, take
+   `m_max(p, s_i) = max over flank offset f of matches between nc[p:p+11]
+   and s_i.flank[f:f+11]`, pooled over both orientations.
+2. `site_hit(p, s_i) = 1` iff `m_max(p, s_i) ≥ 8`.
+3. `S(p) = Σ_i site_hit(p, s_i)`.
+4. Optionally apply Gaussian kernel over `S` with τ ∈ [0, 5].
+5. Emit peaks where `S(p) ≥ 5` and `p` is locally maximal within ±5 nt.
 
-**Mode 2 — m-threshold (higher-coverage alternative).** Fixed L = 11,
-`m ≥ 8`, kernel τ = 1.
+**Mode 1 (previously "recommended default", now retracted).** Mode 1
+used `min-E` marginalization over `L ∈ {9, 10, 11, 12}` with
+E-threshold admission. It is retracted because at least one Durrant
+variant class (`7bp_RTG`) has target-loop length 14 and cannot be
+detected at any `L ∈ {9..12}`. Mode 1 remains a valid variant when
+the target-loop length is known to sit within its `L` range; for
+general use, `L` must span the operating regime of the target task,
+which the Durrant corpus alone cannot determine.
 
-Both modes: no training, no family-specific hyperparameters, no length
-threshold gate, no orientation prior. Peak-finding uses a local-max
-rule (no strictly-greater neighbor within ±5 nt), which allows plateau
-ties at τ=0 to emit multiple positions; τ=0 metrics report both peak
-and plateau structure.
+**Peak-finding convention.** The local-max rule is *"i is a peak iff
+no neighbor j in [i-min_dist, i+min_dist] has S[j] > S[i]"*, with
+`min_dist = 5`. This is equivalent to `S[i] ≥ S[j]` for all j in the
+window, so plateau ties emit every position on the plateau. `min_dist`
+is a radius for the local-max check, not a merge distance for the
+output. At τ=0 with integer-valued S, plateau duplication is a
+positive-measure event; at τ>0 with Gaussian-smoothed S it is
+measure-zero. All τ=0 metrics report both peak-level and Tnp-level
+denominators.
 
-## Result on the Durrant benchmark (65 Tnps × 5 sites = 325 records)
+**Provenance.** `scripts/v5a_framework/variant.py::spec_m_threshold_L11`
+implements Mode 2. `scripts/v5a_framework/tests/test_tau0_anchor.py`
+freezes the historical baseline as a regression: on 65 Durrant
+`_paired_bag*` records, exactly 22 covered, 23 peaks emitted, 22
+IoU-correct, 21 with correct-peak per Tnp, 21 within centroid
+distance ≤ 1 nt of gold.
 
-### Detection resolution — the headline
+## Localization when discriminated positive
 
-For the historical baseline configuration
-(`fixed_L11_m8`, τ=0, S=5, `tsd_handling=off`), on the 22 detected Tnps:
+On the 22 detected bags, the τ=0 baseline reports:
 
-| statistic | value | denominator | correctness criterion |
-|---|---:|---|---|
-| Coverage | 33.85% (22/65) | N_tnp_total | detection emitted |
-| Plateau width (median) | 1 nt | detected Tnps | — (descriptive) |
-| Plateau width (mean) | 1.05 nt | detected Tnps | — (descriptive) |
-| centroid_dist to gold (median) | 0.0 nt | detected Tnps | — (descriptive) |
-| centroid_dist to gold (mean) | 1.02 nt | detected Tnps | — (descriptive; dominated by one 21-nt outlier) |
-
-The plateau structure is the honest form of the "single-nucleotide
-precision" claim. On 19 of 22 detections the detector produces a
-1-nt-wide primary peak exactly at the annotated `gold_nc`; on one
-detection it is a 2-wide plateau centered on gold; on one detection
-the peak is at gold + 1 (biologically real 1-nt offset in an
-RTG-variant Tnp); on one detection the peak is 21 nt from gold.
-
-### Three correctness criteria, three counts on the same 22 detections
-
-The numbers below use three DIFFERENT correctness criteria on the same
-run and are NOT interchangeable — a reader tempted to reconcile them
-arithmetically will get a wrong answer.
-
-| number | criterion | value | denominator |
-|---|---|---:|---|
-| Tnp-level PPV | IoU([peak, peak+L), [gold_nc, gold_nc+L)) ≥ 0.5 | **95.5% (21/22)** | detected Tnps |
-| contains_gold_frac | `gold_nc ∈ plateau_positions` (position-strict) | **90.9% (20/22)** | detected Tnps |
-| exact_le_1 | `\|plateau_centroid − gold_nc\| ≤ 1` | **95.5% (21/22)** | detected Tnps |
-| exact_eq_0 | `\|plateau_centroid − gold_nc\| == 0` | **86.4% (19/22)** | detected Tnps |
-
-The three "detection is correct" counts (95.5% / 90.9% / 95.5%) differ
-by one Tnp each, on the same 22 detections, because the criteria
-answer different questions:
-
-- **IoU ≥ 0.5** — is the emitted window's overlap with the annotated
-  target above half. Coarse, standard for slot-match tasks.
-- **contains_gold** — does the primary plateau STRICTLY include the
-  annotated gold position. Fails when the plateau is one nt off, even
-  if that one nt would be perfectly acceptable under IoU.
-- **exact_le_1** — is the plateau centroid within 1 nt of gold. Under
-  gold-blind centroid this is stricter than IoU on plateau-off-by-one
-  cases and less strict than contains_gold on plateau-adjacent cases.
-
-For the run at hand, one Tnp (`bag001`) has a width-1 plateau at
-position 50 with gold at 49: IoU passes (window overlap 10/11),
-contains_gold fails (49 ∉ {50}), exact_le_1 passes (dist = 1). One
-Tnp (`bag000`) has a width-1 plateau at position 70 with gold at 49:
-all three criteria fail. One Tnp (`bag010`) has a width-2 plateau at
-{49, 50} with gold at 49: all three pass, but the centroid 49.5 fails
-exact_eq_0.
-
-The 95.5% (Tnp-level PPV) and 95.5% (exact_le_1) coincide accidentally
-on this run — Tnp-level PPV counts bag001 and bag010 as correct, fails
-bag000; exact_le_1 counts bag001 and bag010 as correct, fails bag000.
-The three-way split becomes visible at any τ > 0 or any different
-peak_min_dist.
-
-### Exact-hit rate — four numbers, one table
-
-| tolerance | detected-Tnp denominator | all-Tnp denominator |
-|---|---:|---:|
-| centroid_dist == 0 | **86.4% (19/22)** | 29.2% (19/65) |
-| centroid_dist ≤ 1 | **95.5% (21/22)** | 32.3% (21/65) |
-
-Under the older gold-aware "closest to gold" tie-break the same 22
-detections gave 87% at exact position (20/23 peaks — plateau ties
-emitted more than one peak). The 0.6 pp shift from 87% to 86.4%
-is fully explained: one Tnp (bag010) has a plateau at nc positions
-49 and 50, gold at 49; the gold-blind centroid is 49.5, so under the
-strict tolerance == 0 that Tnp is no longer "exact." Under the ≤1
-tolerance, it is. Both numbers ship together.
-
-### Precision (IoU ≥ 0.5) on the same 22-Tnp detected set
-
-| convention | value | 95% CI |
+| statistic | value | denominator |
 |---|---:|---|
-| Tnp-level PPV (21 / 22) | 0.9545 | Clopper-Pearson [0.7716, 0.9989] |
-| Peak-level PPV (22 / 23) | 0.9565 | Clopper-Pearson [0.7846, 0.9989] |
+| Coverage (any peak emitted) | 33.85% (22/65) | N_bag_total |
+| Plateau width (median) | 1 nt | N_detected_bags |
+| Plateau width (mean) | 1.05 nt | N_detected_bags |
+| `contains_gold_frac` | 90.9% (20/22) | N_detected_bags |
+| `centroid_dist` to gold (median) | 0.0 nt | N_detected_bags |
+| `centroid_dist` to gold (mean) | 1.02 nt | N_detected_bags (dominated by one 21-nt outlier) |
 
-Tnp-level is the canonical convention for cross-τ comparison because
-peak-level's denominator inflates at τ=0 (plateau duplication) and
-deflates at τ>0 (kernel merge).
+*In 19 of 22 detections the detector produces a 1-nt-wide primary
+peak exactly at annotated `gold_nc`.* In one detection the plateau is
+2-wide centered on gold (bag010, positions 49 and 50, gold at 49). In
+one detection the peak is at gold + 1 (bag001 of an RTG variant with
+1-nt biological offset). In one detection the peak is 21 nt from
+gold. This is the honest form of the "single-nucleotide precision"
+claim.
 
-### Signal-to-noise vs. shuffled null
+**Three correctness criteria are reported side by side. They differ
+by one bag each and are NOT interchangeable.**
 
-| null | rate per Tnp | ratio |
-|---|---:|---:|
-| Real Tnps (real flanks) | 0.354 | 1× |
-| Shuffled Tnps (random Durrant flanks from other Tnps) | 0.0244 | 14.5× |
-| Contamination-corrected (V1.d) | 0.0226 | 15.5× |
+| criterion | value | what it tests |
+|---|---:|---|
+| Tnp-level PPV (IoU ≥ 0.5) | 95.5% (21/22), CP CI [0.772, 0.999] | window overlap |
+| `contains_gold_frac` | 90.9% (20/22) | plateau strictly contains gold_nc |
+| centroid_dist ≤ 1 | 95.5% (21/22) | plateau centroid within 1 nt of gold |
+| centroid_dist == 0 | 86.4% (19/22) | plateau centroid exactly at gold |
 
-Under a matched analytic null (Bin(N=5, q) with q from the empirical
-hit rate at random positions), the S=5 rate ratio is ≈ 84×.
+The 20/22 vs 21/22 vs 19/22 counts come from `bag001` (plateau {50},
+gold 49: IoU pass, contains_gold fail, `≤1` pass, `==0` fail);
+`bag000` (plateau {70}, gold 49: all fail); and `bag010` (plateau
+{49, 50}, gold 49: all pass except centroid `==0`). Historical
+"87% single-nucleotide precision" used a gold-aware "closest to gold"
+tie-break which peeks at the answer. Under the gold-blind centroid
+rule the same 22 detections give 86.4% at `centroid_dist == 0`.
 
-### Confounder controls
+**PPV per what?** The 21/22 CP CI assumes 22 independent trials. But
+20 of the 22 successes come from bags of the same bridge RNA
+(`T-WT_D-WT`, 34 bags of one nc sequence with disjoint 5-site
+subsamples, see D1 in `a2_probe_endflank_motif.py`). Two claims
+must be reported separately:
 
-- **V1' (external flanks):** mean-m at S=5 positions against 50
-  dinuc-shuffled unrelated sequences = 6.57; at random control
-  positions against the same external sequences = 6.66; Δ = −0.09.
-  S=5 positions carry no intrinsic stickiness against non-related
-  targets.
-- **V1.c (composition):** Shannon entropy of the L=11 window at each
-  S=5 position = 1.87 (median); ncRNA average = 1.80. S=5 positions
-  are not low-complexity, not repeats, not compositionally biased.
-- **V1''' (family background):** with target_flank_start-preserved
-  and only non-target background dinuc-shuffled, ratio real / shuffled
-  = 1.00×. Family-specific flank background contributes essentially
-  zero to S=5 detection rate. The cross-family transfer claim is
-  intact — but this null preserves the target segment, so it cannot
-  rule out TSD confound directly; the TSD scope caveat below covers
-  that channel.
+- **Per-detection localization precision (denominator = 22
+  detections):** plateau width median 1 nt, `contains_gold`
+  90.9%, `centroid_dist ≤ 1` 95.5%. Clopper-Pearson CIs on 22
+  are meaningful for this claim; each detection is a
+  point-emission event, and 22 emissions have been made.
+- **Per-natural-system detection rate (denominator = 1 natural
+  bridge RNA):** T-WT succeeded, 1_7bp_RTG succeeded, and the
+  other 7 engineered variants did not. This is n = 9 as observed,
+  n = 2 as successes, with the caveat that eight of the nine are
+  engineered perturbations of one wild type (see Section 4).
 
-## Applicability
+The doc reports both. Confusing them was one recurring source of
+retractions in the diagnostic phase.
 
-**Required inputs:**
+## Sensitivity, variant-stratified
 
-- ≥ 5 candidate insertion sites for the target transposase
-- ncRNA (bridge RNA) shared across the transposase's sites — this is a
-  biological requirement of the guide-target pairing mechanism, not a
-  data convention. Verified on Durrant: 100% shared ncRNA across the
-  5 sites of each of the 65 Tnps.
-- Per-site target DNA (flank)
+The 65 Durrant `_paired_bag*` identifiers do not represent 65
+independent systems. They cover **9 unique ncRNA sequences**
+(committed as `38626da`): one natural wild-type bridge RNA plus
+eight engineered target-guide (RTG) variants. Detection rate by
+variant, with target-loop length (TBL) from `durrant_gold_v1.jsonl`:
 
-**Ship-ready domain:** IS110 relatives with the Durrant benchmark's
-data structure — a serine-recombinase-like transposase family whose
-element-carried bridge RNA specifies all insertion sites. Documented
-performance stands.
+| variant | # bags | TBL | detected | rate |
+|---|---:|---:|---:|---:|
+| **`T-WT_D-WT`** (natural WT) | 34 | 11 | 20 | 58.8% |
+| **`1_7bp_RTG_D-WT`** | 2 | 14 | 2 | 100% |
+| `2_7bp_RTG_D-WT` | 5 | 14 | 0 | 0% |
+| `3_7bp_RTG_D-WT` | 2 | 14 | 0 | 0% |
+| `4_7bp_RTG_D-WT` | 3 | 14 | 0 | 0% |
+| `4_4bp_RTG_D-WT` | 3 | 11 | 0 | 0% |
+| `1-4bp-RTG_D-WT` | 2 | 11 | 0 | 0% |
+| `2_4bp_RTG_D-WT` | 9 | 11 | 0 | 0% |
+| `3_4bp_RTG_D-WT` | 5 | 11 | 0 | 0% |
 
-**Cross-family transfer:** family-specific flank background contributes
-zero to S=5 detection rate (V1''' 1.00× ratio). Channel A should
-transfer 1:1 to any novel family with the shared-ncRNA architecture,
-as long as `targeting_intact=True`.
+**Two-of-nine bridge RNAs succeed under Mode 2 (fixed L=11, m≥8, S=5)**:
+the natural wild type and one 7bp-RTG variant. The other 7 fail
+completely.
 
-**Boundary property:** the detector's power scales with the number of
-observed sites; multi-site clustering must precede Channel A.
+Coverage failure is *not* qualitatively bimodal ("some variants work,
+others don't for a special reason"). It is a monotone function of two
+site-level quantities that Channel A jointly requires: per-site
+P(m ≥ 8 at gold vicinity), and cross-site position coincidence. The
+`4bp_RTG` group has median m ≈ 7 at L=11 at gold vicinity
+(`d5b_argmax_discriminator.py`), which sits just under the m ≥ 8
+threshold, and its site-level detection collapses. The `7bp_RTG`
+group has target-loop length 14, so the L=11 detector window can
+only capture a subset of matches; only the highest-fidelity of that
+group (1_7bp with `target_flank_matches` median 11 out of 14) has
+enough L=11 matches to pass. **The historical "p^5" attribution is
+retracted:** it fit the T-WT number within 30% and predicted
+0.4–1.2 detections on failing variants (against 0 observed),
+consistent with either the p^5 model or normal small-N noise, but
+`c5d0a75` showed the actual controlling quantity is
+`competitor_count = #{positions : m ≥ m_planted}`, and on Durrant
+T-WT that count is always ≥ 1 (planted position is never sole max).
 
-**Untested regimes (P1 / P2 in framework rebuild):**
+**Statistical-power caveat.** The claim "V4.2's failing planted_m
+distribution matches T-WT's difficulty at the operating point" is
+based on the shared-support stratum `planted_m = 8` (T-WT n = 147,
+V4.2 n = 600). Other strata are underpowered on the T-WT side
+(m=7 has n=17, m=9 has n=6, and m∈{10,11} have n=0). The stratum
+that dominates T-WT (m=8, 86% of sites) is the same stratum where
+both corpora have sufficient sample; on that stratum V4.2's
+competitor-count median (53) is close to T-WT's (38), differing by
+the extra 74 nc positions V4.2 offers (nc length 251 vs 177).
 
-- N_nc > 1 (Durrant is 100% N_nc=1; real IS elements are N_nc ≥ 2 in
-  ~65% of V4.2 mining records). Same-region-across-sites constraint
-  and per-nc search space scale in opposite directions; net effect
-  unmeasured on Durrant.
-- Real non-guided multi-site systems as negative controls. A 5-family
-  pool (IS10-R, IS30, IS903, ISAjo2, ISLdl1; 2,763 non-guided Tnps
-  with ≥5 physical insertions) is staged in
-  `real_data/formatted/real_{fam}_sites.jsonl`. Under the framework's
-  Option E measurement (`negative flanks × Durrant nc substrate`),
-  per-family FP profiles will be reported alongside a `predicted vs.
-  observed fp_hazard` scatter that extrapolates hazard to novel
-  families. Until P2 completes, specificity is bounded by
-  target-destroyed nulls only.
+## Specificity — not measured on this corpus, and why
 
-## Failure modes and scope caveats
+The current corpus provides **no measurable specificity signal for
+Channel A**, for two independent structural reasons.
 
-- **Coverage bound:** ~68% of Durrant Tnps do not yield S=5 coherence
-  under Mode 2 baseline. Those fall to Channel B (S=4 with local
-  corroboration) or Channel C (per-site ranking with local model).
-- **Coordinate assumption:** the current implementation uses exact
-  absolute nc coordinates. For deployment on real guided families
-  where the shared ncRNA is 95%+ homologous but not identical, use
-  normalized-position or sequence-alignment coordinates (ε_norm ≈
-  0.02 is the V4.2-calibrated tolerance).
-- **TSD channel:** IS110 does not characteristically produce TSDs
-  (composite RuvC + serine mechanism; strand exchange rather than
-  staggered cut). Verified in the Durrant data: median pairwise
-  max-match at ±5 nt around the target boundary = 3.0 nt, at chance
-  for p=0.25. TSD confounds do not apply to this specific family, but
-  a `flank_mask="partition"` variant is available for families that
-  do produce TSDs (produces both an `S_all` and an
-  `S_outside_TSD` score for each detection; never a filter).
+**Reason 1 — negative flanks × Durrant nc is double-null.** Under
+"Option E" evaluation (scoring negative-family flanks against the 65
+Durrant ncs), both sides are architecturally random with respect to
+Durrant's guide targets. The 5 non-guided families (IS10-R, IS30,
+IS903, ISAjo2, ISLdl1) target their own genomic contexts, not any
+Durrant bridge RNA position; and no coherence is expected between
+different insertions of a non-guided family scored against Durrant's
+target-position 49. The measured cross-family AUROC on the
+sum-based coherence discriminator is **0.514** (`860adfd`,
+`b478f66`), which is not evidence that Channel A generalizes to
+non-guided families — it is evidence that the negative construction
+gives an identically-random distribution on both sides.
 
-## Deliberately excluded from Channel A itself
+**Reason 2 — Durrant self-cross gives 9 unique nc sequences.** The
+paired shuffling protocol used in prior versions (Durrant flank ×
+another Durrant bag's nc) draws from 9 unique bridge RNA sequences,
+34 of which are the same T-WT variant. The historical
+`shuffled null = 0.0226 per bag` was measured under this
+duplication, and it *understates* the null by an unknown factor
+because "shuffled" 5-flank groups often draw multiple flanks that
+target the same T-WT bridge RNA position 49 by construction. That
+inflation propagates into the historical `real / shuffled = 15.5×`
+figure, which is a lower bound rather than a point estimate.
 
-- Model training and family-specific tuning
-- The taxonomy (`wrong_orient`, `different_region`, etc.) — Channel A
-  produces coordinates, not slot-match against a decoy pool
-- Length threshold gating — Channel A operates at a single specified L
-  per run (multiple-L runs combine via Mode 1 min-E)
-- Local-alignment ranking of within-region candidates — Channel C's
-  responsibility
+Specificity evaluation therefore requires **independent guided
+systems with architecture variability**. The current corpus has
+neither.
 
-## Provenance
+### Real data pipeline (calibration + holdout)
 
-- Method: `scripts/v5a_framework/variant.py::spec_m_threshold_L11` (Mode
-  2 baseline) and `spec_min_E_9_12` (Mode 1).
-- Regression test: `scripts/v5a_framework/tests/test_tau0_anchor.py`
-  (asserts 6 exact discrete counts on 65 / 22 / 23 / 22 / 21 / 21).
-- W9 recomputation script:
-  `scripts/v5a_framework/tests/recompute_w9.py`.
-- Confounder-control diagnostics: `scripts/v5a_w8p_w9_w7p.py`,
-  `scripts/v5a_v1_promiscuity.py`, `scripts/v5a_v1ppp.py`,
-  `scripts/v5a_w10p_v1pp.py`.
+Two identified real-data sources fill part of the gap:
+
+- **1,054 IS110 recombinases (Durrant supplementary).** These
+  provide a calibration target for what "real difficulty" looks
+  like across natural hosts and genomic backgrounds. The concrete
+  measurements needed:
+    - competitor-count distribution at L=11 across the 1,054 systems
+    - per-site match rate `p` at gold vicinity
+    - cross-site position spread (median, p95)
+  These calibrate generator Requirement 0 (below) from n = 1 to
+  n = 1,055. Multi-site flanks are still required for coherence
+  measurement; if not available in the supplementary, they must be
+  extracted by finding the same recombinase in multiple genomes.
+- **seekRNA (Siddiquee et al., Nat Commun 2024).** Provides 4
+  IS1111 systems + 1 IS110 system with validated targets. IS1111's
+  architecture differs from IS110 in specific, testable ways: the
+  order of the upstream and downstream match segments is reversed,
+  the NCR sits downstream of the ORF rather than upstream, and an
+  sTIR is present. This is the **held-out generalization test**:
+  Channel A trained/selected on IS110 architecture should still fire
+  on IS1111 under the correct family-agnostic operation (upstream +
+  downstream order-invariant conjunction). The reversed order is a
+  binary architectural fingerprint the model must not depend on.
+
+Real data provides **calibration and holdout**, not training and
+selection. Training on any single real family alone would learn its
+family-specific architecture (position, length, orientation, N_nc,
+match-segment order) as if that architecture were the task, and fail
+the held-out family. That is the class of failure V4.2 downstream
+selectors repeatedly reproduced on Durrant.
+
+### Generator role (training + selection)
+
+Training and selection require a synthetic generator whose role is
+**architecture randomization × difficulty matching**, orthogonal:
+
+- **Architecture axes randomized** (per-example uniform draws where
+  applicable): guide position in ncRNA (most important); guide
+  length `L`; ncRNA length; number and order of guide match
+  segments (upstream first, downstream first, single segment, three
+  segments); NCR position relative to ORF (upstream / downstream);
+  orientation convention; N_nc (1, 2, 3); TSD presence × width ×
+  spatial relation to guide target; secondary-structure context
+  (with / without 5' stem-loop).
+- **Difficulty axes matched** to a calibration distribution from
+  the 1,054-system pool: competitor-count distribution at the
+  target detector L; cross-site position spread; per-site hit rate
+  `p`; background base composition.
+
+The orthogonality is what makes this useful. Difficulty controlled
+by competitor-count is family-agnostic; every architecture axis can
+vary freely without changing the detection burden. Any statistic the
+detector learns that depends on architecture will fail on IS1111's
+flipped-order holdout. Any statistic that depends only on
+cross-site coherence — which is the only architecture-invariant
+signal — will generalize.
+
+**Requirement 0 for the generator (D5e-based, `c5d0a75`).** For each
+planted site, at the target task's detector L=11:
+```
+competitor_count = #{ nc positions p : m_max(p, site.flank) ≥ m_planted }
+fraction(competitor_count ≤ 10) < 5%
+```
+- T-WT baseline at L=11: 2.94% of sites at `competitor_count ≤ 10`.
+- V4.2 (2000 sampled positive sites) at L=11: 33.5%. **11× above
+  the T-WT baseline.**
+- The V4.2 gap is entirely at `planted_m ≥ 10`, where the planted
+  guide becomes nearly sole max (competitor count 2–3). T-WT has
+  zero sites at `planted_m ≥ 10`. This is the concrete, measurable
+  form of the synthetic → real gap that V5A-3a and downstream
+  selectors repeatedly hit.
+- Competitor count is tie-robust (unlike argmax and centroid
+  distance), directly corresponds to the E-value analytic
+  (`E = N_windows · P(Bin(L, 0.25) ≥ m_planted)`), and cannot be
+  gamed by lowering fidelity (fidelity moves planted_m; competitor
+  count moves accordingly; only the *ratio* characterizes the
+  task).
+
+**Requirement 0's calibration base is currently n = 1 natural bridge
+RNA (T-WT).** Expanding to n = 1,055 via the 1,054 IS110 pool is the
+immediate next step, and must precede any synthetic sample
+generation. Building the generator against a n=1 target hardcodes
+IS110's specific characteristics into the "reality" definition and
+reintroduces exactly the class of overfitting that has been retracted
+16 times in this project.
+
+### Diagnostic byproduct: architecture-axis stratification
+
+Architecture randomization gives one measurement that is impossible
+on any single-family real dataset: **detector performance stratified
+by architecture axis.** For example, in a generator run:
+
+- guide-position-in-ncRNA random vs fixed at 40% of length: if
+  the detector shows different accuracy on the two, it is
+  depending on a positional prior it should not have.
+- number of guide match segments 1 vs 2 vs 3: if performance
+  collapses when the segment count differs from IS110's canonical
+  2, the model has memorized segment count.
+- NCR upstream vs downstream of ORF: same test.
+
+These stratifications become the pre-holdout diagnostics before the
+IS1111 test in seekRNA. The IS1111 comparison then confirms whether
+the synthetic diagnostic transfers.
 
 ## Retractions from prior versions
 
-- "87% single-nucleotide precision" quoted with peak-level denominator
-  (23 peaks): the number was under gold-aware "closest to gold"
-  tie-break, which peeks at the answer to pick the peak on plateaus.
-  Under the gold-blind centroid rule the same 22 detections give
-  86.4% at centroid_dist == 0 (Tnp-level denominator) and 95.5% at
-  centroid_dist ≤ 1. Both numbers ship together with the 3-tuple
-  resolution.
-- "PPV = 0.955" was Tnp-level; "PPV = 0.957" was peak-level. Both are
-  correct measurements on the same run; different denominators.
+- **Coverage `33.85%` as a headline.** Replaced with variant-stratified
+  breakdown: 20/34 on T-WT, 2/2 on 1_7bp_RTG, 0/31 on other 7 variants.
+- **"87% single-nucleotide precision" quoted with peak-level denominator
+  (23 peaks) and gold-aware tie-break.** Under gold-blind centroid the
+  same 22 detections give 86.4% at `centroid_dist == 0` and 95.5% at
+  `centroid_dist ≤ 1` — both numbers ship together, with the plateau
+  three-tuple as the primary description.
+- **PPV = 0.955 (21/22).** Correct at the Tnp-level, meaningful for
+  per-detection localization; not meaningful as a "how many bridge
+  RNAs work" number, for which the denominator is 2/9.
+- **Mode 1 (min-E over L ∈ {9..12}) as recommended default.** Cannot
+  reach L=14 for `7bp_RTG` variants. Retained only when the target
+  task's L range is known to sit within {9..12}.
+- **"TSD-partition (`flank_mask = "partition"`) available."** The
+  Durrant corpus has no characteristic TSD (median pairwise
+  max-match at ±5 nt around target boundary = 3.0 nt, at chance for
+  p = 0.25); IS110 mechanism does not produce one. The 5 non-guided
+  families in the corpus have TSDs but score against Durrant nc
+  under Option E as double-null, so partition efficacy cannot be
+  measured here. `flank_mask` remains a documented framework axis,
+  but its practical value is not testable on this corpus.
+- **p^5 quantitative attribution.** Fitted T-WT within 30% (predicted
+  25.9, observed 20) but attribution to independence-across-sites is
+  broken by the tie structure (competitor count ≥ 1 always on T-WT).
+  Replaced by competitor-count formulation.
+- **Requirement 0 in `≤ 10% within argmax ±5` form.** Tie-blind and
+  gameable by lowering fidelity. Replaced by `fraction(competitor
+  count ≤ 10) < 5%`, which is tie-robust and jointly constrained by
+  planted intensity + background density.
+- **The 5-family FP measurement plan** (IS10-R, IS30, IS903, ISAjo2,
+  ISLdl1 × Durrant nc): retired as double-null. Any per-family FP
+  number derived from this construction has no meaning as a
+  specificity statistic.
+- **`shuffled null = 0.0226 per bag` as an absolute baseline.**
+  Understates the null due to the 9-unique-nc duplication in
+  Durrant. Historical `real / shuffled = 15.5×` becomes a lower
+  bound rather than a point estimate.
+
+## Provenance
+
+- **Framework code:** `scripts/v5a_framework/{match_table,variant,
+  metrics,cv,layers,flank_coherence}.py`,
+  `scripts/v5a_framework/e_match_table.py`.
+- **Regression test:** `scripts/v5a_framework/tests/test_tau0_anchor.py`
+  (asserts 6 discrete counts on the historical baseline).
+- **W9 recomputation:** `scripts/v5a_framework/tests/recompute_w9.py`.
+- **Diagnostic phase evidence** (all in `scripts/v5a_framework/tests/`):
+    - `a1_probe_is10r.py`, `a1p_probe_is10r_dedup.py` — Option E
+      probe on IS10-R, duplicate-flank contamination and geometry
+      diagnostics.
+    - `a2_probe_endflank_motif.py` — the 9-unique-bridge-RNA
+      finding.
+    - `d5_discriminator_probe.py`, `d5b_argmax_discriminator.py` —
+      discriminator reframe attempts, extremum-statistic failure
+      diagnosis.
+    - `d5c_v42_argmax_check.py`, `d5d_l_consistent.py` — V4.2
+      argmax analysis at L=guide-length (D5c) corrected to L=11
+      (D5d).
+    - `d5e_competitor_count.py` — tie-robust competitor-count
+      metric and Requirement 0.
+
+Doc lives at `docs/channel_a.md`; render on demand.
