@@ -20,12 +20,26 @@ old 17-channel accessibility profile):
   ch0  dG_open_u1[i] = -RT * ln P(unpaired[i])
        Per-position free energy to open one base at i.
 
-  ch1  dG_open_uL_pn[i] = (-RT * sum_{k in win_L(i)} ln P(unpaired[k])) / L
+  ch1  dG_open_uL_pn[i] = (-RT * ln P(positions [i, i+L] all unpaired)) / L
        Per-nt normalized dG to open the L-length window starting at i.
+       Uses the JOINT probability from RNA.pfl_fold_up() with global
+       window + global max_bp_span (2026-08-31 fix; earlier v1 used the
+       independence approximation P(joint)=prod P(individual), which
+       collapses to mean(dG_open_u1) exactly — a bug-signature r=+1.0000
+       against dG_open_u1's window mean.)
        *Per-nt* because dG_open_uL is otherwise not comparable across
        different guide lengths (same failure mode as log_tail — see
        [[finding-v5a2-null-ceiling]] and [[finding-diagnostics-d-a9-a13]]).
        When L changes, always normalize to per-nt units.
+
+  ch1' cooperativity_win_pn[i] = mean(dG_open_u1)[win] - dG_open_uL_pn[i]
+       Positive = joint less likely than independence (anti-cooperative;
+       window straddles a boundary or dispersed unpaired positions).
+       Zero = independent (uniform loop).
+       Negative = joint MORE likely than independence (positive cooperative;
+       coherent internal loop).
+       Direct indicator of "is this a real loop vs a boundary/heterogeneous
+       geometry" that no single-nt channel encodes.
 
   ch2  E_span_win[i] = sum_{i',j} P(i',j) * |i'-j| /
                         sum_{i',j} P(i',j)  over i' in win_L(i), j != i'
@@ -77,15 +91,16 @@ DEFAULT_GUIDE_LENGTH = 11
 EPS_PAIR_MASS = 1e-8
 
 # Sign convention per channel: +1 = "gold expected higher than random-m
-# competitor"; -1 = "gold expected lower"; 0 = "no strong prior".
+# competitor"; -1 = "gold expected lower"; 0 = "unknown / to be measured".
 # Item 4.5 (2026-08-31) confirms these directions on 265 Durrant pairs.
 # For a symmetric verdict rule use P(gold_better) = 0.5 + sign*(P(delta>0) - 0.5).
 CHANNEL_GOLD_SIGN: dict[str, int] = {
-    "dG_open_u1":    -1,   # dG open cost; low = accessible
-    "dG_open_uL_pn": -1,   # per-nt open cost; low = accessible
-    "E_span_win":    -1,   # partner distance; short-range partners for internal loops
-    "H_pair_win":    +1,   # partner entropy; diffuse = internal loop
-    "p_ss_window":   +1,   # window mean P_ss; high = accessible
+    "dG_open_u1":           -1,   # dG open cost; low = accessible
+    "dG_open_uL_pn":        -1,   # per-nt open cost; low = accessible
+    "cooperativity_win_pn":  0,   # unknown direction; expect gold-anchor-specific — see 4.5' rerun
+    "E_span_win":           -1,   # partner distance; short = internal loops
+    "H_pair_win":           +1,   # partner entropy; diffuse = internal loop
+    "p_ss_window":          +1,   # window mean P_ss; high = accessible
 }
 
 
@@ -104,14 +119,15 @@ class StructureFeaturesV2:
     """Per-position BPP-derived structural feature bundle for one ncRNA.
 
     Shapes:
-        dG_open_u1        (nc_len,)              — always defined
-        dG_open_uL_pn     (nc_len - L + 1,)      — always defined
-        E_span_win        (nc_len - L + 1,)      — NaN where window pair mass < eps
-        H_pair_win        (nc_len - L + 1,)      — NaN where window pair mass < eps
-        windowed_valid    (nc_len - L + 1,) bool — True where E_span/H_pair are defined
-        bpp               (nc_len, nc_len)       — symmetric BPP matrix
-        p_ss              (nc_len,)              — P(unpaired) per position
-        ensemble_energy   scalar
+        dG_open_u1            (nc_len,)              — always defined
+        dG_open_uL_pn         (nc_len - L + 1,)      — TRUE joint (pfl_fold_up)
+        cooperativity_win_pn  (nc_len - L + 1,)      — mean(u1) - true_uL_pn (per-nt)
+        E_span_win            (nc_len - L + 1,)      — NaN where window pair mass < eps
+        H_pair_win            (nc_len - L + 1,)      — NaN where window pair mass < eps
+        windowed_valid        (nc_len - L + 1,) bool — True where E_span/H_pair defined
+        bpp                   (nc_len, nc_len)       — symmetric BPP matrix
+        p_ss                  (nc_len,)              — P(unpaired) per position
+        ensemble_energy       scalar
 
     NaN convention (user directive 2026-08-31): E_span_win and H_pair_win
     return NaN for windows with negligible pair mass (a meaningful signal:
@@ -125,6 +141,7 @@ class StructureFeaturesV2:
     guide_length: int
     dG_open_u1: np.ndarray
     dG_open_uL_pn: np.ndarray
+    cooperativity_win_pn: np.ndarray
     E_span_win: np.ndarray
     H_pair_win: np.ndarray
     windowed_valid: np.ndarray
@@ -133,22 +150,42 @@ class StructureFeaturesV2:
     ensemble_energy: float
 
 
-def _fold_compound_pf(seq: str) -> tuple:
-    """Return (folded ``RNA.fold_compound``, ensemble_energy_kcal_per_mol).
-    Accepts DNA (T) or RNA (U). pf() has been run so bpp() is valid."""
+def _rna_seq(seq: str) -> str:
     rna = seq.upper().replace("T", "U")
     for ch in rna:
         if ch not in "ACGUN":
             raise ValueError(f"Non-nucleotide character {ch!r} in sequence")
+    return rna
+
+
+def _fold_compound_pf(seq: str) -> tuple:
+    """Return (folded ``RNA.fold_compound``, ensemble_energy_kcal_per_mol).
+    Accepts DNA (T) or RNA (U). pf() has been run so bpp() is valid."""
+    rna = _rna_seq(seq)
     fc = RNA.fold_compound(rna)
     pf_ret = fc.pf()
-    # pf() returns (centroid_structure_str, ensemble_energy_float) on modern
-    # ViennaRNA. Fall back to 0.0 if the return shape is unexpected.
     if isinstance(pf_ret, tuple) and len(pf_ret) >= 2:
         ee = float(pf_ret[1])
     else:
         ee = 0.0
     return fc, ee
+
+
+def _joint_dg_open_uL_per_nt(seq: str, L: int) -> np.ndarray:
+    """True per-nt dG_open_uL from RNA.pfl_fold_up with global window and
+    global max_bp_span. Convention (ViennaRNA docs): up[i][u] = P(segment
+    starting at 1-indexed position i, length u, all unpaired).
+
+    Returns array of length (n - L + 1), with entry k for window starting
+    at 0-indexed position k.
+    """
+    n = len(seq)
+    rna = _rna_seq(seq)
+    up = np.array(RNA.pfl_fold_up(rna, L, n, n), dtype=np.float64)
+    # up.shape == (n+1, L+1). Slice col L (segment length L) at rows 1..n-L+1.
+    p_all = up[1 : n - L + 2, L]
+    p_all = np.clip(p_all, 1e-30, 1.0)
+    return -KT_37C_KCAL_PER_MOL * np.log(p_all) / L
 
 
 def _bpp_matrix(fc, n: int) -> np.ndarray:
@@ -176,19 +213,14 @@ def _dg_open_u1(p_ss: np.ndarray) -> np.ndarray:
     return -KT_37C_KCAL_PER_MOL * np.log(p_ss)
 
 
-def _dg_open_uL_per_nt(dg_u1: np.ndarray, L: int) -> np.ndarray:
-    """Per-nt-normalized dG_open over each L-window.
-
-    Under the independence approximation P(all unpaired in [i, i+L]) ~=
-    prod P(unpaired[k]), so dG_open_uL = sum dG_open_u1 over the window.
-    Divide by L for per-nt units so the channel is comparable across
-    different L values (per docstring caveat).
-    """
+def _mean_u1_per_window(dg_u1: np.ndarray, L: int) -> np.ndarray:
+    """Independence-approx per-nt dG over each L-window: mean(dG_open_u1).
+    Kept as a helper so cooperativity_win_pn can be computed as
+    (mean_u1 - true_uL_pn)."""
     if len(dg_u1) < L:
         return np.zeros(0, dtype=np.float64)
     csum = np.concatenate(([0.0], np.cumsum(dg_u1, dtype=np.float64)))
-    win_sum = csum[L:] - csum[:-L]
-    return win_sum / L
+    return (csum[L:] - csum[:-L]) / L
 
 
 def _per_position_span(bpp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -263,7 +295,9 @@ def compute_features_v2(seq: str, guide_length: int = DEFAULT_GUIDE_LENGTH
     bpp = _bpp_matrix(fc, n)
     p_ss = _p_ss(bpp)
     dg_u1 = _dg_open_u1(p_ss)
-    dg_uL_pn = _dg_open_uL_per_nt(dg_u1, guide_length)
+    dg_uL_pn = _joint_dg_open_uL_per_nt(seq, guide_length)
+    mean_u1_win = _mean_u1_per_window(dg_u1, guide_length)
+    cooperativity_win_pn = mean_u1_win - dg_uL_pn
 
     # E_span: weighted mean partner-distance over the L-window.
     span_numer_per_pos, pair_mass_per_pos = _per_position_span(bpp)
@@ -282,6 +316,7 @@ def compute_features_v2(seq: str, guide_length: int = DEFAULT_GUIDE_LENGTH
         guide_length=guide_length,
         dG_open_u1=dg_u1,
         dG_open_uL_pn=dg_uL_pn,
+        cooperativity_win_pn=cooperativity_win_pn,
         E_span_win=E_span_win,
         H_pair_win=H_pair_win,
         windowed_valid=windowed_valid,

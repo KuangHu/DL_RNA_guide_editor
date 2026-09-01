@@ -61,6 +61,8 @@ def main() -> int:
     check("dG_open_u1 shape", feats.dG_open_u1.shape == (len(nc),))
     check("dG_open_uL_pn shape",
           feats.dG_open_uL_pn.shape == (len(nc) - L + 1,))
+    check("cooperativity_win_pn shape",
+          feats.cooperativity_win_pn.shape == (len(nc) - L + 1,))
     check("E_span_win shape",
           feats.E_span_win.shape == (len(nc) - L + 1,))
     check("H_pair_win shape",
@@ -81,6 +83,15 @@ def main() -> int:
           np.isfinite(feats.dG_open_u1).all())
     check("dG_open_uL_pn finite",
           np.isfinite(feats.dG_open_uL_pn).all())
+    check("cooperativity_win_pn finite",
+          np.isfinite(feats.cooperativity_win_pn).all())
+    # Sanity: cooperativity should NOT be identically zero (that would mean
+    # true_uL_pn == mean(u1), i.e. we regressed to the independence bug).
+    coop = feats.cooperativity_win_pn
+    non_zero_frac = float((np.abs(coop) > 1e-6).mean())
+    check("cooperativity != 0 (not independence-collapsed)",
+          non_zero_frac > 0.5,
+          f"non-zero fraction = {non_zero_frac:.3f}")
 
     # NaN in E_span/H_pair only allowed where windowed pair mass < eps
     # (compute the mask independently)
@@ -123,6 +134,9 @@ def main() -> int:
     print(f"  dG_open_u1[{gold}]          = {feats.dG_open_u1[gold]:.3f} kcal/mol")
     print(f"  dG_open_uL_pn[{gold}] (per-nt) = "
           f"{feats.dG_open_uL_pn[gold]:.3f} kcal/mol/nt")
+    print(f"  cooperativity_win_pn[{gold}] = "
+          f"{feats.cooperativity_win_pn[gold]:+.3f} kcal/mol/nt "
+          f"(positive = anti-cooperative)")
     print(f"  E_span_win[{gold}]          = {feats.E_span_win[gold]:.2f} nt")
     print(f"  H_pair_win[{gold}]          = {feats.H_pair_win[gold]:.3f} nats")
 

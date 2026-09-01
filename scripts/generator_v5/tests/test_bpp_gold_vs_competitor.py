@@ -67,7 +67,7 @@ def main() -> int:
     print(f"[4.5] {len(tnp_ids)} Durrant Tnps")
 
     # Aggregate records
-    channels = ["dG_open_uL_pn", "E_span_win", "H_pair_win", "p_ss_window"]
+    channels = ["dG_open_uL_pn", "cooperativity_win_pn", "E_span_win", "H_pair_win", "p_ss_window"]
     gold_vals: dict[str, list[float]] = {c: [] for c in channels}
     comp_vals: dict[str, list[float]] = {c: [] for c in channels}
     deltas: dict[str, list[float]] = {c: [] for c in channels}
@@ -121,10 +121,11 @@ def main() -> int:
 
             def pull(idx: int) -> dict[str, float]:
                 return {
-                    "dG_open_uL_pn": float(feats.dG_open_uL_pn[idx]),
-                    "E_span_win":    float(feats.E_span_win[idx]),
-                    "H_pair_win":    float(feats.H_pair_win[idx]),
-                    "p_ss_window":   float(p_ss_win[idx]),
+                    "dG_open_uL_pn":        float(feats.dG_open_uL_pn[idx]),
+                    "cooperativity_win_pn": float(feats.cooperativity_win_pn[idx]),
+                    "E_span_win":           float(feats.E_span_win[idx]),
+                    "H_pair_win":           float(feats.H_pair_win[idx]),
+                    "p_ss_window":          float(p_ss_win[idx]),
                 }
             gv = pull(gold_pos)
             cv = pull(comp_pos)
@@ -218,11 +219,11 @@ def main() -> int:
     print("  Verdict rule: P(gold_better) >= 0.65 = material discrimination")
     print("  (equivalent to |P(delta>0) - 0.5| >= 0.15 with expected direction accounted for)")
 
-    # 0b: correlation matrix on the 4 channels, at gold and competitor positions
+    # 0b: correlation matrix on the channels, at gold and competitor positions
     from scipy.stats import spearmanr
     print()
     print("=== 0b: cross-channel Spearman r on gold + competitor positions ===")
-    channels_ordered = ["dG_open_uL_pn", "E_span_win", "H_pair_win", "p_ss_window"]
+    channels_ordered = ["dG_open_uL_pn", "cooperativity_win_pn", "E_span_win", "H_pair_win", "p_ss_window"]
 
     def stack_at(role: str) -> np.ndarray:
         arrs = []
