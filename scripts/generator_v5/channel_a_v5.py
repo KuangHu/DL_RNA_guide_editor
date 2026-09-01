@@ -168,7 +168,19 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
             nc = ncs[a]
             if tnp not in tnp_nc:
                 tnp_nc[tnp] = nc
-                tnp_arch[tnp] = dict(r["labels"].get("arch", {}))
+                arch_meta = dict(r["labels"].get("arch", {}))
+                nc_len = int(r["labels"].get("ncrna_length", len(nc)))
+                # nc_len bucket for scale-invariance analysis
+                if nc_len < 120:
+                    arch_meta["nc_len_bucket"] = "070-119"
+                elif nc_len < 180:
+                    arch_meta["nc_len_bucket"] = "120-179"
+                elif nc_len < 240:
+                    arch_meta["nc_len_bucket"] = "180-239"
+                else:
+                    arch_meta["nc_len_bucket"] = "240-300"
+                arch_meta["nc_len"] = nc_len
+                tnp_arch[tnp] = arch_meta
             elif tnp_nc[tnp] != nc:
                 continue
             gs = r["labels"].get("guide_span_in_active_noncoding")
@@ -289,10 +301,37 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     args = ap.parse_args()
 
-    print(f"[chA-v5] building MatchTable from {args.v5_jsonl} "
-          f"({args.workers} workers)", flush=True)
-    mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir,
-                                       workers=args.workers)
+    shard_dir_path = Path(args.shard_dir)
+    if (shard_dir_path / "_index.json").exists():
+        print(f"[chA-v5] loading cached MatchTable from {args.shard_dir}", flush=True)
+        mt = load_mt(str(shard_dir_path))
+        # Re-parse JSONL only to reconstruct arch metadata (light — arch dicts
+        # are small, but we do skip the whole line if we can).
+        print(f"[chA-v5] re-reading arch metadata from JSONL", flush=True)
+        tnp_arch: dict = {}
+        with open(args.v5_jsonl) as f:
+            for line in f:
+                r = json.loads(line)
+                tnp = r["transposase_id"]
+                if tnp in tnp_arch:
+                    continue
+                arch_meta = dict(r["labels"].get("arch", {}))
+                nc_len = int(r["labels"].get("ncrna_length", 0))
+                if nc_len < 120:
+                    arch_meta["nc_len_bucket"] = "070-119"
+                elif nc_len < 180:
+                    arch_meta["nc_len_bucket"] = "120-179"
+                elif nc_len < 240:
+                    arch_meta["nc_len_bucket"] = "180-239"
+                else:
+                    arch_meta["nc_len_bucket"] = "240-300"
+                arch_meta["nc_len"] = nc_len
+                tnp_arch[tnp] = arch_meta
+    else:
+        print(f"[chA-v5] building MatchTable from {args.v5_jsonl} "
+              f"({args.workers} workers)", flush=True)
+        mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir,
+                                           workers=args.workers)
     print(f"[chA-v5] running Channel A (fixed L=11, m>=8, tau=0, S=5)", flush=True)
     spec = spec_m_threshold_L11(m=8, tau=0, S=5)
     if args.workers > 1:
@@ -309,7 +348,8 @@ def main() -> int:
     # Per-arch stratifications on the FULL corpus
     all_reports = {"overall": overall}
     for axis in ("L", "is_split", "orient", "n_nc", "tsd_width",
-                   "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf"):
+                   "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf",
+                   "nc_len_bucket"):
         r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis)
         all_reports[axis] = r
         _print_table(f"stratified by {axis} (all L)", r)
@@ -325,7 +365,8 @@ def main() -> int:
     all_reports["overall_L11"] = overall_L11
     _print_table("overall L=11 only", overall_L11)
     for axis in ("is_split", "orient", "n_nc", "tsd_width",
-                   "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf"):
+                   "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf",
+                   "nc_len_bucket"):
         r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis,
                                 restrict_to={"L": 11})
         all_reports[f"{axis}_L11"] = r
