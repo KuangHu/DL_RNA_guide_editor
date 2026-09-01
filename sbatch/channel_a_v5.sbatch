@@ -37,9 +37,11 @@ echo "  report:    $REPORT"
 echo "  python:    $PYTHON"
 
 cd "$CODEDIR"
+: "${WORKERS:=$(nproc)}"
 $PYTHON -m scripts.generator_v5.channel_a_v5 \
     --v5-jsonl "$V5_JSONL" \
     --shard-dir "$SHARD_DIR" \
-    --report-out "$REPORT"
+    --report-out "$REPORT" \
+    --workers "$WORKERS"
 
 echo "[$(date -Iseconds)] done"

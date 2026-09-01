@@ -27,16 +27,64 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
+import os
 import sys
+import time
 from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.v5a_framework.match_table import (
-    DEFAULT_LS, ORIENTS, MatchTable, SiteRecord, TnpRecord, _build_common,
+    DEFAULT_LS, ORIENTS, MatchTable, SiteRecord, TnpRecord,
+    _build_common, _write_index, _write_shard, load as load_mt,
 )
 from scripts.v5a_framework.variant import spec_m_threshold_L11, run_variant
+
+
+# Worker-scope arg storage (set by initializer).
+_W_SHARD_DIR: Path | None = None
+_W_ORIENTS: tuple = ORIENTS
+_W_LS: tuple = DEFAULT_LS
+
+
+def _worker_init(shard_dir: str, orients: tuple, Ls: tuple) -> None:
+    global _W_SHARD_DIR, _W_ORIENTS, _W_LS
+    _W_SHARD_DIR = Path(shard_dir)
+    _W_ORIENTS = orients
+    _W_LS = Ls
+
+
+def _worker_write_shard(t: TnpRecord) -> str:
+    _write_shard(_W_SHARD_DIR, t, _W_ORIENTS, _W_LS)
+    return t.tnp_id
+
+
+def _parallel_build(records: list[TnpRecord], shard_dir: Path,
+                      orients: tuple, Ls: tuple, meta: dict,
+                      workers: int) -> MatchTable:
+    """Parallel replacement for _build_common's per-Tnp shard write.
+
+    Serial upstream (~51 Tnp/min single-thread) can't cover 50K Tnps
+    within a 2 h wall budget. Parallelize the write-shard step across
+    a Pool; _write_index still runs centrally.
+    """
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.perf_counter()
+    print(f"  [match_table] parallel build over {len(records)} Tnps "
+          f"with {workers} workers", flush=True)
+    with mp.Pool(workers, initializer=_worker_init,
+                   initargs=(str(shard_dir), orients, Ls)) as pool:
+        for i, _ in enumerate(pool.imap_unordered(_worker_write_shard,
+                                                    records, chunksize=16), 1):
+            if i % 500 == 0:
+                dt = time.perf_counter() - t0
+                print(f"  [match_table] {i}/{len(records)} tnps  "
+                      f"{dt:.1f}s ({dt/i*1000:.0f} ms/tnp)", flush=True)
+    _write_index(shard_dir, records, orients, Ls, meta)
+    print(f"  [match_table] index written", flush=True)
+    return load_mt(str(shard_dir))
 
 
 def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
@@ -44,12 +92,16 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
                         Ls: tuple = DEFAULT_LS,
                         min_sites: int = 5,
                         cap_sites: int = 5,
-                        family_label: str = "v5_positive"
+                        family_label: str = "v5_positive",
+                        workers: int = 1,
                         ) -> tuple[MatchTable, dict]:
     """Build MatchTable from V5 positives JSONL.
 
     Returns (mt, arch_by_tnp). arch_by_tnp[tnp_id] holds the per-bag
     architecture metadata for downstream stratification.
+
+    workers > 1 parallelizes the per-Tnp shard writes via
+    multiprocessing.Pool. Required for 50K Tnps within a 2 h budget.
     """
     tnp_sites: dict[str, list[SiteRecord]] = defaultdict(list)
     tnp_nc: dict[str, str] = {}
@@ -86,8 +138,12 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
                 for t, ss in tnp_sites.items() if len(ss) >= min_sites]
     print(f"[build_v5] {len(records)} Tnps with >= {min_sites} sites", flush=True)
     meta = {"builder": "build_v5_positive", "src": str(v5_jsonl_path),
-            "min_sites": min_sites, "cap_sites": cap_sites}
-    mt = _build_common(records, Path(shard_dir), orients, Ls, meta)
+            "min_sites": min_sites, "cap_sites": cap_sites,
+            "workers": workers}
+    if workers > 1:
+        mt = _parallel_build(records, Path(shard_dir), orients, Ls, meta, workers)
+    else:
+        mt = _build_common(records, Path(shard_dir), orients, Ls, meta)
     return mt, tnp_arch
 
 
@@ -181,10 +237,13 @@ def main() -> int:
     ap.add_argument("--v5-jsonl", required=True)
     ap.add_argument("--shard-dir", required=True)
     ap.add_argument("--report-out", default=None)
+    ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     args = ap.parse_args()
 
-    print(f"[chA-v5] building MatchTable from {args.v5_jsonl}", flush=True)
-    mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir)
+    print(f"[chA-v5] building MatchTable from {args.v5_jsonl} "
+          f"({args.workers} workers)", flush=True)
+    mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir,
+                                       workers=args.workers)
     print(f"[chA-v5] running Channel A (fixed L=11, m>=8, tau=0, S=5)", flush=True)
     spec = spec_m_threshold_L11(m=8, tau=0, S=5)
     peaks_by_tnp = run_variant(mt, spec)
