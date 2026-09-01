@@ -42,7 +42,19 @@ cd "$CODEDIR"
 : "${SPEC:=m8}"
 EXTRA_ARGS=""
 if [ "${NEGATIVES:-0}" = "1" ]; then
-    EXTRA_ARGS="--treat-as-negatives"
+    EXTRA_ARGS="$EXTRA_ARGS --treat-as-negatives"
+fi
+if [ "${GRID:-0}" = "1" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --grid"
+fi
+if [ -n "${TAU:-}" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --tau $TAU"
+fi
+if [ -n "${S_VAL:-}" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --S $S_VAL"
+fi
+if [ -n "${M_VAL:-}" ]; then
+    EXTRA_ARGS="$EXTRA_ARGS --m $M_VAL"
 fi
 $PYTHON -m scripts.generator_v5.channel_a_v5 \
     --v5-jsonl "$V5_JSONL" \

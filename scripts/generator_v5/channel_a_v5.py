@@ -45,14 +45,25 @@ from scripts.v5a_framework.variant import (
 )
 
 
-def _resolve_spec(name: str, negatives: bool = False):
-    """Named specs for the two modes reported in Channel A doc."""
+def _resolve_spec(name: str, tau: int | None = None,
+                    S: int | None = None, m: int | None = None,
+                    negatives: bool = False):
+    """Named specs with optional (tau, S, m) overrides."""
     if name == "m8":
-        # Mode 2: fixed L=11, m>=8, tau=0, S=5 (Durrant baseline)
-        return spec_m_threshold_L11(m=8, tau=0, S=5)
+        # Mode 2 defaults: fixed L=11, m=8, tau=0, S=5.
+        return spec_m_threshold_L11(m=(m if m is not None else 8),
+                                       tau=(tau if tau is not None else 0),
+                                       S=(S if S is not None else 5))
     if name == "min_E":
-        # Mode 1: min-E over L in {9..12}, E<=4, tau=5, S=5 (X1' v3 dominant)
-        return spec_min_E_9_12(E=4.0, tau=5, S=5)
+        # Mode 1 defaults: min-E over L in {9..12}, E=4, tau=5, S=5.
+        return spec_min_E_9_12(E=4.0,
+                                 tau=(tau if tau is not None else 5),
+                                 S=(S if S is not None else 5))
+    if name == "m9":
+        # Test the m=9 rule on L=11 (equivalent to E<4 at L=11 for min_E).
+        return spec_m_threshold_L11(m=9,
+                                       tau=(tau if tau is not None else 0),
+                                       S=(S if S is not None else 5))
     raise ValueError(f"unknown spec: {name!r}")
 
 
@@ -314,8 +325,14 @@ def main() -> int:
     ap.add_argument("--shard-dir", required=True)
     ap.add_argument("--report-out", default=None)
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
-    ap.add_argument("--spec", default="m8", choices=["m8", "min_E"],
-                     help="Channel A spec: m8 (Mode 2) or min_E (Mode 1)")
+    ap.add_argument("--spec", default="m8",
+                     choices=["m8", "min_E", "m9"],
+                     help="Channel A spec base")
+    ap.add_argument("--tau", type=int, default=None, help="Override spec tau")
+    ap.add_argument("--S", type=int, default=None, help="Override spec S")
+    ap.add_argument("--m", type=int, default=None, help="Override spec m (m8/m9 only)")
+    ap.add_argument("--grid", action="store_true",
+                     help="Sweep (tau, S) grid on the cached MatchTable")
     ap.add_argument("--treat-as-negatives", action="store_true",
                      help="Interpret coverage as FP rate; skip PPV meaningfulness")
     args = ap.parse_args()
@@ -351,8 +368,48 @@ def main() -> int:
               f"({args.workers} workers)", flush=True)
         mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir,
                                            workers=args.workers)
-    print(f"[chA-v5] running Channel A spec={args.spec}", flush=True)
-    spec = _resolve_spec(args.spec, negatives=args.treat_as_negatives)
+    if args.grid:
+        # (tau, S) sweep on the cached MatchTable. Report only overall +
+        # L=11 per config; skip the per-arch stratifications for size.
+        grid_tau = [0, 1, 2, 3, 5]
+        grid_S = [3, 4, 5]
+        grid_out: dict = {}
+        for tau in grid_tau:
+            for S in grid_S:
+                cfg = f"{args.spec}_tau{tau}_S{S}"
+                print(f"\n[chA-v5][grid] {cfg}", flush=True)
+                spec = _resolve_spec(args.spec, tau=tau, S=S,
+                                       negatives=args.treat_as_negatives)
+                if args.workers > 1:
+                    peaks = _parallel_run_variant(mt, spec, args.shard_dir,
+                                                     args.workers)
+                else:
+                    peaks = run_variant(mt, spec)
+                res_all = compute_channel_a(mt, peaks, tnp_arch, stratify_by=None)
+                res_L11 = compute_channel_a(mt, peaks, tnp_arch,
+                                              stratify_by=None,
+                                              restrict_to={"L": 11})
+                res_L = compute_channel_a(mt, peaks, tnp_arch, stratify_by="L")
+                grid_out[cfg] = {"tau": tau, "S": S, "overall": res_all,
+                                   "overall_L11": res_L11, "by_L": res_L}
+                pk = res_all.get("all", {})
+                pkL = res_L11.get("all", {})
+                print(f"  overall cov={pk.get('coverage',0):.4f} "
+                      f"L=11 cov={pkL.get('coverage',0):.4f}", flush=True)
+        if args.report_out:
+            Path(args.report_out).parent.mkdir(parents=True, exist_ok=True)
+            with open(args.report_out, "w") as f:
+                json.dump({"grid": grid_out, "spec_base": args.spec}, f, indent=2)
+            print(f"[chA-v5] grid report written to {args.report_out}")
+        return 0
+
+    tau_str = str(args.tau) if args.tau is not None else "default"
+    S_str = str(args.S) if args.S is not None else "default"
+    m_str = str(args.m) if args.m is not None else "default"
+    print(f"[chA-v5] running Channel A spec={args.spec} tau={tau_str} S={S_str} m={m_str}",
+          flush=True)
+    spec = _resolve_spec(args.spec, tau=args.tau, S=args.S, m=args.m,
+                          negatives=args.treat_as_negatives)
     if args.workers > 1:
         peaks_by_tnp = _parallel_run_variant(mt, spec, args.shard_dir,
                                                 args.workers)
