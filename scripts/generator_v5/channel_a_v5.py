@@ -1,0 +1,204 @@
+"""Channel A on V5 generator output.
+
+Builds a MatchTable from V5 positives JSONL (each bag = one Tnp;
+active_noncoding_index picks the shared nc; each site's flank + planted
+target on nc supply SiteRecord fields), then runs the historical
+Channel A spec (fixed L=11, m>=8, tau=0, S=5) via run_variant.
+
+Reports:
+  overall: coverage_rate, PPV_peak_level, PPV_Tnp_level, exact_rate
+  per-L stratified (11, 12, 13, 14)
+  per-arch axis stratified:
+    is_split (False/True)
+    orient (fwd/rev)
+    N_nc (1/2/3)
+    tsd_width (0/2/5/8/9/12)
+    tsd_relation (none/before/after/both_sides)
+    has_5p_stem_loop_active (False/True)
+    ncr_pos_rel_orf (upstream/downstream/inline)
+
+Baseline anchors (Durrant, 65 Tnps):
+  coverage 0.338, PPV_peak 0.9565, PPV_Tnp 0.9545, exact 0.3231
+
+Any stratum where PPV drops materially below the pool number reveals a
+Channel A architecture-dependence that the generator existed to expose.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.v5a_framework.match_table import (
+    DEFAULT_LS, ORIENTS, MatchTable, SiteRecord, TnpRecord, _build_common,
+)
+from scripts.v5a_framework.variant import spec_m_threshold_L11, run_variant
+
+
+def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
+                        orients: tuple = ORIENTS,
+                        Ls: tuple = DEFAULT_LS,
+                        min_sites: int = 5,
+                        cap_sites: int = 5,
+                        family_label: str = "v5_positive"
+                        ) -> tuple[MatchTable, dict]:
+    """Build MatchTable from V5 positives JSONL.
+
+    Returns (mt, arch_by_tnp). arch_by_tnp[tnp_id] holds the per-bag
+    architecture metadata for downstream stratification.
+    """
+    tnp_sites: dict[str, list[SiteRecord]] = defaultdict(list)
+    tnp_nc: dict[str, str] = {}
+    tnp_arch: dict[str, dict] = {}
+    with open(v5_jsonl_path) as f:
+        for line in f:
+            r = json.loads(line)
+            if not r["labels"].get("is_positive"):
+                continue
+            tnp = r["transposase_id"]
+            a = r["labels"].get("active_noncoding_index", 0) or 0
+            ncs = r["inputs"]["noncoding_regions"]
+            if a >= len(ncs):
+                a = 0
+            nc = ncs[a]
+            if tnp not in tnp_nc:
+                tnp_nc[tnp] = nc
+                tnp_arch[tnp] = dict(r["labels"].get("arch", {}))
+            elif tnp_nc[tnp] != nc:
+                continue
+            gs = r["labels"].get("guide_span_in_active_noncoding")
+            if not gs:
+                continue
+            tnp_sites[tnp].append(SiteRecord(
+                site_idx=len(tnp_sites[tnp]),
+                flank=r["inputs"]["flank"],
+                upstream_flank=None,
+                target_flank_start=r["labels"].get("planted_start"),
+                gold_nc=int(gs[0]),
+                gold_L=int(r["labels"]["guide_length"]),
+            ))
+    records = [TnpRecord(tnp_id=t, family=family_label, nc=tnp_nc[t],
+                          sites=ss[:cap_sites])
+                for t, ss in tnp_sites.items() if len(ss) >= min_sites]
+    print(f"[build_v5] {len(records)} Tnps with >= {min_sites} sites", flush=True)
+    meta = {"builder": "build_v5_positive", "src": str(v5_jsonl_path),
+            "min_sites": min_sites, "cap_sites": cap_sites}
+    mt = _build_common(records, Path(shard_dir), orients, Ls, meta)
+    return mt, tnp_arch
+
+
+def _iou(p, L_win, gold_nc, gold_L, thresh=0.5) -> bool:
+    a0, a1 = p, p + L_win
+    b0, b1 = gold_nc, gold_nc + gold_L
+    inter = max(0, min(a1, b1) - max(a0, b0))
+    union = (a1 - a0) + (b1 - b0) - inter
+    return union > 0 and inter / union >= thresh
+
+
+def _primary_pos(pks) -> float:
+    max_S = max(pk.S_all for pk in pks)
+    top = [pk.position for pk in pks if pk.S_all == max_S]
+    return sum(top) / len(top)
+
+
+def compute_channel_a(mt: MatchTable, peaks_by_tnp: dict, tnp_arch: dict,
+                        stratify_by: str | None = None) -> dict:
+    """Return {stratum -> metrics} where stratum is either 'all' or a
+    value taken from tnp_arch[tnp_id][stratify_by]."""
+    groups: dict[str, list[str]] = defaultdict(list)
+    for tnp_id in mt.tnp_ids:
+        if stratify_by is None:
+            groups["all"].append(tnp_id)
+        else:
+            v = tnp_arch.get(tnp_id, {}).get(stratify_by, "unknown")
+            groups[str(v)].append(tnp_id)
+    out: dict[str, dict] = {}
+    for stratum, tnps in groups.items():
+        n_tnps = len(tnps)
+        covered = 0; total_peaks = 0; peaks_correct = 0
+        tnps_with_correct = 0; exact = 0
+        for tnp_id in tnps:
+            pks = peaks_by_tnp.get(tnp_id, [])
+            if not pks:
+                continue
+            covered += 1
+            tnp = mt.tnps[tnp_id]
+            gold_nc = tnp.sites[0].gold_nc
+            gold_L = tnp.sites[0].gold_L
+            any_ok = False
+            for pk in pks:
+                total_peaks += 1
+                if _iou(pk.position, pk.L_at_peak, gold_nc, gold_L):
+                    peaks_correct += 1
+                    any_ok = True
+            if any_ok:
+                tnps_with_correct += 1
+            pp = _primary_pos(pks)
+            if abs(pp - gold_nc) <= 1:
+                exact += 1
+        out[stratum] = {
+            "n_tnps":            n_tnps,
+            "covered":           covered,
+            "total_peaks":       total_peaks,
+            "peaks_correct":     peaks_correct,
+            "tnps_with_correct": tnps_with_correct,
+            "exact":             exact,
+            "coverage":          covered / max(1, n_tnps),
+            "ppv_peak":          peaks_correct / max(1, total_peaks),
+            "ppv_tnp":           tnps_with_correct / max(1, covered),
+            "exact_rate":        exact / max(1, n_tnps),
+        }
+    return out
+
+
+def _print_table(title: str, results: dict, sort_key=None) -> None:
+    print(f"\n=== {title} ===")
+    print(f"  {'stratum':<20s} {'n_tnps':>7s} {'covered':>8s} "
+          f"{'coverage':>9s} {'ppv_peak':>9s} {'ppv_tnp':>8s} {'exact_rate':>11s}")
+    strata = sorted(results.items(), key=(sort_key or (lambda kv: kv[0])))
+    for s, m in strata:
+        print(f"  {s:<20s} {m['n_tnps']:>7d} {m['covered']:>8d} "
+              f"{m['coverage']:>9.4f} {m['ppv_peak']:>9.4f} "
+              f"{m['ppv_tnp']:>8.4f} {m['exact_rate']:>11.4f}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--v5-jsonl", required=True)
+    ap.add_argument("--shard-dir", required=True)
+    ap.add_argument("--report-out", default=None)
+    args = ap.parse_args()
+
+    print(f"[chA-v5] building MatchTable from {args.v5_jsonl}", flush=True)
+    mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir)
+    print(f"[chA-v5] running Channel A (fixed L=11, m>=8, tau=0, S=5)", flush=True)
+    spec = spec_m_threshold_L11(m=8, tau=0, S=5)
+    peaks_by_tnp = run_variant(mt, spec)
+
+    # Overall
+    overall = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=None)
+    _print_table("overall vs Durrant anchor (0.338 / 0.9565 / 0.9545 / 0.3231)",
+                    overall)
+
+    # Per-arch stratifications
+    all_reports = {"overall": overall}
+    for axis in ("L", "is_split", "orient", "n_nc", "tsd_width",
+                   "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf"):
+        r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis)
+        all_reports[axis] = r
+        _print_table(f"stratified by {axis}", r)
+
+    if args.report_out:
+        Path(args.report_out).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.report_out, "w") as f:
+            json.dump(all_reports, f, indent=2)
+        print(f"\n[chA-v5] report written to {args.report_out}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
