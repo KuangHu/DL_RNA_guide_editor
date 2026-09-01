@@ -17,18 +17,47 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import multiprocessing as mp
+import os
 import random
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
+import RNA
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.generator_v5.bag_v2 import Bag, build_bag, load_flank_pool
 from scripts.generator_v5.difficulty import load_or_build_rate_table
+
+
+# Worker-local state (set once per process by initializer).
+_WORKER_TBL = None
+_WORKER_FL = None
+
+
+def _worker_init():
+    """Loaded once per multiprocessing worker."""
+    global _WORKER_TBL, _WORKER_FL
+    _WORKER_TBL = load_or_build_rate_table(rebuild=False)
+    _WORKER_FL = load_flank_pool()
+
+
+def _worker_build_bag(args):
+    """Build ONE bag in a worker. args = (idx, seed, include_channels)."""
+    idx, seed, include_channels = args
+    rng = random.Random(seed)
+    b = build_bag(f"bag_{idx:06d}", rng, _WORKER_FL, _WORKER_TBL)
+    if b is None:
+        return None
+    summary = summarize_bag(b)
+    records = b.to_v42_jsonl(include_structure_channels=include_channels)
+    return summary, records
 
 
 # Thresholds (mirror test_v5_acceptance_500.py).
@@ -282,51 +311,127 @@ def _print_sub(r):
         print(f"    {m} {name}: {val_s}  (target {ck['op']} {tgt_s})")
 
 
+def _git_commit(repo_root: Path) -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
+                            capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _rate_table_hash(tbl_path: str) -> str:
+    try:
+        with open(tbl_path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except Exception:
+        return "unknown"
+
+
+def _emit_manifest(path: str, args: argparse.Namespace,
+                     tbl_path: str, n_bags_produced: int,
+                     seconds: float) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    manifest = {
+        "generator_version":    "v5",
+        "git_commit":           _git_commit(repo_root),
+        "viennarna_version":    RNA.__version__,
+        "python_version":       sys.version.split()[0],
+        "seed":                 args.seed,
+        "n_bags_requested":     args.n_bags,
+        "n_bags_produced":      n_bags_produced,
+        "seconds_elapsed":      seconds,
+        "workers":              args.workers,
+        "rate_table_path":      tbl_path,
+        "rate_table_sha256":    _rate_table_hash(tbl_path),
+        "output_jsonl":         args.out,
+        "stats_out":            args.stats_out,
+        "include_structure_channels": args.include_channels,
+    }
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-bags", type=int, required=True)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--out", type=str, default=None, help="JSONL output for bag site records")
-    ap.add_argument("--stats-out", type=str, default=None, help="JSON output for acceptance report")
-    ap.add_argument("--progress-every", type=int, default=100)
+    ap.add_argument("--out", type=str, default=None,
+                     help="JSONL output for bag site records")
+    ap.add_argument("--stats-out", type=str, default=None,
+                     help="JSON output for acceptance report")
+    ap.add_argument("--manifest-out", type=str, default=None,
+                     help="JSON output for generator manifest")
+    ap.add_argument("--progress-every", type=int, default=500)
+    ap.add_argument("--workers", type=int, default=1,
+                     help="Number of parallel workers (1 = serial)")
+    ap.add_argument("--include-channels", action=argparse.BooleanOptionalAction,
+                     default=True,
+                     help="Include per-nc structure channels + mask in JSONL")
+    ap.add_argument("--rate-table-path", type=str,
+                     default="/global/scratch/users/kh36969/DL_novel_guide_editor/v5_gen/rate_table.json")
     args = ap.parse_args()
 
-    print(f"[gen] loading rate table + flank pool")
-    tbl = load_or_build_rate_table(rebuild=False)
+    print(f"[gen] preflight: rate table + flank pool")
+    tbl = load_or_build_rate_table(args.rate_table_path, rebuild=False)
     fl = load_flank_pool()
-    print(f"[gen] flank pool = {len(fl)} sequences")
-    rng = random.Random(args.seed)
+    print(f"[gen] flank pool = {len(fl)} sequences; rate_table L in {tbl.L_range}")
 
     out_fp = None
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         out_fp = open(args.out, "w")
 
+    # Per-bag seeds derived from the master seed to keep worker RNG independent.
+    master_rng = random.Random(args.seed)
+    per_bag_seeds = [master_rng.randrange(0, 2**31 - 1) for _ in range(args.n_bags)]
+    tasks = [(i, per_bag_seeds[i], args.include_channels) for i in range(args.n_bags)]
+
     bag_stats: list[dict] = []
     t0 = time.perf_counter()
     skips = 0
     try:
-        for k in range(args.n_bags):
-            b = build_bag(f"bag_{k:06d}", rng, fl, tbl)
-            if b is None:
-                skips += 1
-                continue
-            bag_stats.append(summarize_bag(b))
-            if out_fp is not None:
-                for rec in b.to_v42_jsonl():
-                    out_fp.write(json.dumps(rec) + "\n")
-            # Explicit drop for memory hygiene
-            del b
-            if (k + 1) % args.progress_every == 0:
-                dt = time.perf_counter() - t0
-                print(f"  [{k+1}/{args.n_bags}] kept {len(bag_stats)}, "
-                      f"{dt:.1f}s ({dt/(k+1)*1000:.0f} ms/bag)")
+        if args.workers <= 1:
+            _worker_init()
+            for k, tsk in enumerate(tasks):
+                r = _worker_build_bag(tsk)
+                if r is None:
+                    skips += 1
+                else:
+                    summary, records = r
+                    bag_stats.append(summary)
+                    if out_fp is not None:
+                        for rec in records:
+                            out_fp.write(json.dumps(rec) + "\n")
+                if (k + 1) % args.progress_every == 0:
+                    dt = time.perf_counter() - t0
+                    print(f"  [{k+1}/{args.n_bags}] kept {len(bag_stats)}, "
+                          f"{dt:.1f}s ({dt/(k+1)*1000:.0f} ms/bag)")
+        else:
+            print(f"[gen] launching {args.workers} workers")
+            with mp.Pool(args.workers, initializer=_worker_init) as pool:
+                for k, r in enumerate(pool.imap_unordered(_worker_build_bag,
+                                                            tasks, chunksize=8), 1):
+                    if r is None:
+                        skips += 1
+                    else:
+                        summary, records = r
+                        bag_stats.append(summary)
+                        if out_fp is not None:
+                            for rec in records:
+                                out_fp.write(json.dumps(rec) + "\n")
+                    if k % args.progress_every == 0:
+                        dt = time.perf_counter() - t0
+                        print(f"  [{k}/{args.n_bags}] kept {len(bag_stats)}, "
+                              f"{dt:.1f}s ({dt/k*1000:.0f} ms/bag)")
     finally:
         if out_fp is not None:
             out_fp.close()
 
     dt = time.perf_counter() - t0
-    print(f"[gen] done in {dt:.1f}s ({dt/max(args.n_bags,1)*1000:.0f} ms/bag), skips={skips}")
+    print(f"[gen] done in {dt:.1f}s ({dt/max(args.n_bags,1)*1000:.0f} ms/bag), "
+          f"skips={skips}")
 
     report = acceptance_report(bag_stats)
     print_report(report)
@@ -339,6 +444,10 @@ def main() -> int:
                 "report":  report,
             }, f, indent=2)
         print(f"[gen] stats written to {args.stats_out}")
+    if args.manifest_out:
+        _emit_manifest(args.manifest_out, args, args.rate_table_path,
+                         len(bag_stats), dt)
+        print(f"[gen] manifest written to {args.manifest_out}")
     return 0
 
 

@@ -90,9 +90,77 @@ class Bag:
     has_5p_stem_loop_per_nc: list[bool]
     sites: list[Site] = field(default_factory=list)
 
-    def to_v42_jsonl(self, m_threshold: int = 8) -> list[dict]:
+    def _nc_channels(self, nc_idx: int) -> dict:
+        """Emit the 5 structure channels + mask for one nc as JSON-safe lists."""
+        f = self.ncrna_features[nc_idx]
+        # NaN in float arrays -> None (JSON-safe) so the mask channel becomes
+        # the source of truth for validity.
+        def _nan_to_none(a: np.ndarray) -> list:
+            out = []
+            for v in a.tolist():
+                out.append(None if (v != v) else float(v))
+            return out
+        return {
+            "dG_open_u1":            [float(v) for v in f.dG_open_u1.tolist()],
+            "dG_open_uL_pn":         [float(v) for v in f.dG_open_uL_pn.tolist()],
+            "cooperativity_win_pn":  [float(v) for v in f.cooperativity_win_pn.tolist()],
+            "E_span_win":            _nan_to_none(f.E_span_win),
+            "H_pair_win":            _nan_to_none(f.H_pair_win),
+            "windowed_valid":        [bool(v) for v in f.windowed_valid.tolist()],
+        }
+
+    def to_v42_jsonl(self, m_threshold: int = 8,
+                       include_structure_channels: bool = True) -> list[dict]:
+        """Emit one JSONL record per site. Schema (frozen 2026-08-31):
+
+        Per site:
+          site_id, transposase_id, ncrna_id
+          inputs.flank, inputs.noncoding_regions
+          labels.is_positive
+          labels.target_position_in_flank  (plant_start, plant_end) — full
+            plant width including split gap; use planted_start / planted_end
+            below for the block-level breakdown.
+          labels.planted_start (=block-A start on flank)
+          labels.planted_A_end, planted_B_start, planted_B_end
+          labels.planted_m       (bag-level; used for competitor-count def)
+          labels.perfect_guide_dna, guide_dna (=mutated_target incl gap for split)
+          labels.guide_length (=L), n_mismatches, mismatch_positions
+          labels.active_noncoding_index, num_noncoding_regions
+          labels.guide_span_in_active_noncoding (=[planted_start_on_nc,
+            planted_start_on_nc + L])
+          labels.ncrna_length
+          labels.arch{}  (all architecture axes + segment_count + orient)
+          labels.all_matching_positions_on_nc  (at fixed m_threshold=8)
+          labels.competitor_count_at_planted_m (integer scalar)
+          labels.m_at_planted    (integer scalar, per-site)
+
+        Per nc (in nc_channels, list of length num_noncoding_regions):
+          role  ("active" / "inactive")
+          dG_open_u1, dG_open_uL_pn, cooperativity_win_pn, E_span_win,
+          H_pair_win, windowed_valid   (per-position or per-window arrays)
+          has_5p_stem_loop
+        """
+        # Precompute all nc channel blobs once per bag (shared across sites).
+        if include_structure_channels:
+            nc_channels_per_bag = []
+            for i, _ in enumerate(self.ncrna_sequences):
+                blob = self._nc_channels(i)
+                blob["role"] = "active" if i == self.active_nc_index else "inactive"
+                blob["has_5p_stem_loop"] = self.has_5p_stem_loop_per_nc[i]
+                nc_channels_per_bag.append(blob)
+        else:
+            nc_channels_per_bag = None
+
         recs = []
+        arch_meta = self.architecture.to_metadata()
+        # Denormalized architecture fields per user schema spec.
+        arch_meta["segment_count"] = 2 if self.architecture.is_split else 1
+        arch_meta["orient"] = ("rev" if self.architecture.is_reversed_target
+                                else "fwd")
         for s in self.sites:
+            arch_site = dict(arch_meta)
+            arch_site["target_m_at_planted"] = s.m_at_planted
+            arch_site["has_5p_stem_loop_active"] = self.has_5p_stem_loop_per_nc[self.active_nc_index]
             recs.append({
                 "site_id": f"{self.bag_id}_site_{s.site_idx:04d}",
                 "transposase_id": self.bag_id,
@@ -105,11 +173,16 @@ class Bag:
                     "is_positive": True,
                     "target_position_in_flank": [s.planted_start_on_flank,
                                                    s.planted_B_end_on_flank],
-                    "target_dna": s.mutated_target,
-                    "guide_dna": s.mutated_target,
+                    "planted_start":  s.planted_start_on_flank,
+                    "planted_A_end":  s.planted_A_end_on_flank,
+                    "planted_B_start": s.planted_B_start_on_flank,
+                    "planted_B_end":  s.planted_B_end_on_flank,
+                    "planted_m":      self.difficulty.planted_m,
+                    "target_dna":     s.mutated_target,
+                    "guide_dna":      s.mutated_target,
                     "perfect_guide_dna": self.guide_sequence,
-                    "guide_length": self.difficulty.L,
-                    "n_mismatches": self.n_mismatches,
+                    "guide_length":   self.difficulty.L,
+                    "n_mismatches":   self.n_mismatches,
                     "mismatch_positions": s.mismatch_positions,
                     "active_noncoding_index": self.active_nc_index,
                     "num_noncoding_regions": len(self.ncrna_sequences),
@@ -117,11 +190,12 @@ class Bag:
                         self.planted_start_on_nc,
                         self.planted_start_on_nc + self.difficulty.L,
                     ],
-                    "ncrna_length": len(self.ncrna_sequences[self.active_nc_index]),
-                    "arch": self.architecture.to_metadata()
-                        | {"target_m_at_planted": s.m_at_planted,
-                              "has_5p_stem_loop_active": self.has_5p_stem_loop_per_nc[self.active_nc_index]},
+                    "ncrna_length":   len(self.ncrna_sequences[self.active_nc_index]),
+                    "arch":           arch_site,
                     "all_matching_positions_on_nc": s.all_matching_positions_on_nc,
+                    "competitor_count_at_planted_m": s.competitor_count_at_planted_m,
+                    "m_at_planted":   s.m_at_planted,
+                    "nc_channels":    nc_channels_per_bag,
                 },
             })
         return recs
