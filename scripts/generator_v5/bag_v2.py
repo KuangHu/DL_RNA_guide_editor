@@ -73,7 +73,9 @@ class Site:
     mismatch_positions: list[int]                    # 0-indexed in the guide (concatenated A+B), not counting the gap
     all_matching_positions_on_nc: list[int]          # nc positions where m_max >= m_threshold_for_all_matching (fixed 8; downstream MIL candidates)
     m_at_planted: int                                # m measured at the planted nc position with an L-window
-    competitor_count_at_planted_m: int                # nc positions where m_max >= planted_m (defines Test 1's competitor set)
+    competitor_count_at_planted_m: int                # nc positions where m_max >= this SITE's planted_m
+    planted_m: int                                    # this site's planted m (drawn per-site around bag target_m)
+    n_mismatches: int                                 # this site's n_mismatches = L - planted_m
 
 
 @dataclass(frozen=True)
@@ -86,7 +88,6 @@ class Bag:
     ncrna_features: list[StructureFeaturesV2]        # length == n_nc, per-nc BPP fold
     guide_sequence: str                              # A + B (length L)
     planted_start_on_nc: int                         # position on active nc; shared across sites
-    n_mismatches: int
     has_5p_stem_loop_per_nc: list[bool]
     sites: list[Site] = field(default_factory=list)
 
@@ -177,12 +178,13 @@ class Bag:
                     "planted_A_end":  s.planted_A_end_on_flank,
                     "planted_B_start": s.planted_B_start_on_flank,
                     "planted_B_end":  s.planted_B_end_on_flank,
-                    "planted_m":      self.difficulty.planted_m,
+                    "planted_m":      s.planted_m,
+                    "bag_target_m":   self.difficulty.target_m,
                     "target_dna":     s.mutated_target,
                     "guide_dna":      s.mutated_target,
                     "perfect_guide_dna": self.guide_sequence,
                     "guide_length":   self.difficulty.L,
-                    "n_mismatches":   self.n_mismatches,
+                    "n_mismatches":   s.n_mismatches,
                     "mismatch_positions": s.mismatch_positions,
                     "active_noncoding_index": self.active_nc_index,
                     "num_noncoding_regions": len(self.ncrna_sequences),
@@ -381,7 +383,14 @@ def build_bag(
     guide_A = guide[: arch.guide.A]
     guide_B = guide[arch.guide.A :]
 
-    n_mismatches = max(0, diff.L - diff.planted_m)
+    # PER-SITE planted_m (2026-08-31 fix): the SAME 86/10/4 tail sampled
+    # INDEPENDENTLY per site around the bag's target_m. Bag-level shared m
+    # made Channel A's S=5 conjunction trivial: 55% of bags had range=0,
+    # 80% had all-5-hits by construction. Per-site draws restore the
+    # probabilistic-hit premise Channel A operates on.
+    from scripts.generator_v5.difficulty import sample_planted_m
+    per_site_planted_m = [sample_planted_m(rng, diff.target_m) for _ in range(n_sites)]
+    per_site_n_mismatches = [max(0, diff.L - m) for m in per_site_planted_m]
 
     # 5' stem-loop flags: dot-bracket MFE per nc.
     import RNA
@@ -398,11 +407,13 @@ def build_bag(
     fl_idx = rng.sample(range(len(flank_pool)), n_sites)
     for i, k in enumerate(fl_idx):
         base_flank = flank_pool[k]
+        site_planted_m = per_site_planted_m[i]
+        site_n_mismatches = per_site_n_mismatches[i]
         (flank_final, A_start, A_end, B_start, B_end,
          mutated_concat, mm_pos) = _plant_target_on_flank(
             base_flank, guide_A, guide_B,
             arch.is_split, arch.split_gap,
-            arch.is_reversed_target, n_mismatches, rng,
+            arch.is_reversed_target, site_n_mismatches, rng,
         )
         # A_start=plant_start; A_end=slot boundary (left block end);
         # B_start=slot boundary (right block start); B_end=plant_end.
@@ -412,9 +423,9 @@ def build_bag(
             m_at_planted = int(m_arr[planted_start_on_nc])
         else:
             m_at_planted = 0
-        # competitor_count_at_planted_m: positions with m_max >= this bag's
-        # planted_m. This is Test 1's definition, not the fixed-m=8 one.
-        competitor_count_at_planted_m = int((m_arr >= diff.planted_m).sum())
+        # competitor_count_at_planted_m: positions with m_max >= this site's
+        # planted_m. Test 1 semantics: per-site.
+        competitor_count_at_planted_m = int((m_arr >= site_planted_m).sum())
         sites.append(Site(
             site_idx=i,
             flank=flank_final,
@@ -427,6 +438,8 @@ def build_bag(
             all_matching_positions_on_nc=matching,
             m_at_planted=m_at_planted,
             competitor_count_at_planted_m=competitor_count_at_planted_m,
+            planted_m=site_planted_m,
+            n_mismatches=site_n_mismatches,
         ))
 
     return Bag(
@@ -438,7 +451,6 @@ def build_bag(
         ncrna_features=feats,
         guide_sequence=guide,
         planted_start_on_nc=planted_start_on_nc,
-        n_mismatches=n_mismatches,
         has_5p_stem_loop_per_nc=sl_flags,
         sites=sites,
     )
