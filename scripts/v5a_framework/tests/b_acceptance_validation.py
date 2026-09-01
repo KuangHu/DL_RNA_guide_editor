@@ -40,8 +40,16 @@ L_DET = 11
 MT_POS = "/global/scratch/users/kh36969/DL_novel_guide_editor/v5a_framework_cache/durrant_positive"
 V42_POS = "/global/scratch/users/kh36969/DL_novel_guide_editor/data/positives_v42.jsonl"
 
-TEST1_COMP_LEQ10_MAX = 0.05        # fraction(competitor_count <= 10) < 5%
-TEST1_RATE_MED_LO   = 0.19          # median(competitor_count / L) at m=8
+# Test 1 (v3, length-conditioned, 2026-08-31):
+#   Original v2 used `fraction(competitor_count <= 10) < 5%` as an
+#   ABSOLUTE threshold. Analytic competitor_count ≈ 0.21 × (nc_len - L + 1),
+#   so at nc_len = 70 the expected value is only 12.6 — the absolute
+#   threshold would reject the entire short-nc population by construction
+#   the moment nc_len ~ U[70, 300] is added. Replaced with a normalized-
+#   rate lower bound at 0.10 (half the analytic mean 0.21).
+TEST1_RATE_LO_MAX   = 0.05          # fraction(count / n_positions < 0.10) < 5%
+TEST1_RATE_LO_FLOOR = 0.10
+TEST1_RATE_MED_LO   = 0.19          # median(competitor_count / n_pos) at m=8
 TEST1_RATE_MED_HI   = 0.24
 TEST1_ZERO_MASS_AT_MGE10 = 0.02     # <= 2% at planted_m >= 10
 
@@ -92,17 +100,22 @@ def run_test1(stats: dict, use_L: int) -> tuple[bool, dict]:
     pm = stats["planted_m"]
     nl = stats["nc_len"]
 
-    frac_leq10 = float((c <= 10).mean())
+    # n_positions per site = nc_len - use_L + 1 (number of L-windows on nc).
+    # Rate = competitor_count / n_positions is length-invariant (per user's
+    # analytic constant ~0.21). Use rate-based lower bound instead of an
+    # absolute count threshold.
+    n_pos = np.maximum(nl - use_L + 1, 1)
+    rate = c / n_pos
+    frac_below_floor = float((rate < TEST1_RATE_LO_FLOOR).mean())
     m8_mask = (pm == 8)
-    # Doc rate is per nc POSITION, i.e. competitor_count / ncRNA_length
-    rate_at_m8 = c[m8_mask] / nl[m8_mask]
+    rate_at_m8 = rate[m8_mask]
     rate_med = float(np.median(rate_at_m8)) if len(rate_at_m8) else float("nan")
     zero_mass = float((pm >= 10).mean())
 
     checks = {
-        "fraction(competitor_count <= 10)":         (frac_leq10, TEST1_COMP_LEQ10_MAX, "<"),
-        "median(c / nc_length) at planted_m=8":     (rate_med, (TEST1_RATE_MED_LO, TEST1_RATE_MED_HI), "in"),
-        "P(planted_m >= 10)":                       (zero_mass, TEST1_ZERO_MASS_AT_MGE10, "<"),
+        f"fraction(count / n_pos < {TEST1_RATE_LO_FLOOR})": (frac_below_floor, TEST1_RATE_LO_MAX, "<"),
+        "median(c / n_pos) at planted_m=8":                  (rate_med, (TEST1_RATE_MED_LO, TEST1_RATE_MED_HI), "in"),
+        "P(planted_m >= 10)":                                (zero_mass, TEST1_ZERO_MASS_AT_MGE10, "<"),
     }
     result = {}
     passes = True
