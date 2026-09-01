@@ -40,13 +40,18 @@ from scripts.v5a_framework.match_table import (
     DEFAULT_LS, ORIENTS, MatchTable, SiteRecord, TnpRecord,
     _build_common, _write_index, _write_shard, load as load_mt,
 )
-from scripts.v5a_framework.variant import spec_m_threshold_L11, run_variant
+from scripts.v5a_framework.variant import (
+    Peak, spec_m_threshold_L11, run_variant,
+)
 
 
 # Worker-scope arg storage (set by initializer).
 _W_SHARD_DIR: Path | None = None
 _W_ORIENTS: tuple = ORIENTS
 _W_LS: tuple = DEFAULT_LS
+
+_W_MT: MatchTable | None = None
+_W_SPEC = None
 
 
 def _worker_init(shard_dir: str, orients: tuple, Ls: tuple) -> None:
@@ -56,9 +61,53 @@ def _worker_init(shard_dir: str, orients: tuple, Ls: tuple) -> None:
     _W_LS = Ls
 
 
+def _worker_init_scan(shard_dir: str, spec) -> None:
+    """Init for the variant-scan Pool: load MatchTable index + hold spec."""
+    global _W_MT, _W_SPEC
+    _W_MT = load_mt(shard_dir)
+    _W_SPEC = spec
+
+
+def _worker_scan_chunk(tnp_ids: list[str]) -> dict[str, list[Peak]]:
+    """Run the variant scan on a subset of Tnp ids in this worker."""
+    # Reuse run_variant's per-Tnp logic by temporarily restricting mt.tnp_ids.
+    original = _W_MT.tnp_ids
+    try:
+        _W_MT.tnp_ids = list(tnp_ids)
+        return run_variant(_W_MT, _W_SPEC)
+    finally:
+        _W_MT.tnp_ids = original
+
+
 def _worker_write_shard(t: TnpRecord) -> str:
     _write_shard(_W_SHARD_DIR, t, _W_ORIENTS, _W_LS)
     return t.tnp_id
+
+
+def _parallel_run_variant(mt: MatchTable, spec, shard_dir: str,
+                            workers: int) -> dict[str, list[Peak]]:
+    """Parallel replacement for the serial run_variant loop over Tnps."""
+    tnp_ids = list(mt.tnp_ids)
+    n = len(tnp_ids)
+    # Chunk so each worker processes a contiguous slab; chunksize picked
+    # so ~4 chunks per worker for load balancing.
+    n_chunks = max(workers * 4, 1)
+    chunk_size = max(1, (n + n_chunks - 1) // n_chunks)
+    chunks = [tnp_ids[i:i + chunk_size] for i in range(0, n, chunk_size)]
+    print(f"  [variant] parallel scan over {n} Tnps in {len(chunks)} chunks "
+          f"({workers} workers)", flush=True)
+    peaks_all: dict[str, list[Peak]] = {}
+    t0 = time.perf_counter()
+    done = 0
+    with mp.Pool(workers, initializer=_worker_init_scan,
+                   initargs=(shard_dir, spec)) as pool:
+        for peaks_chunk in pool.imap_unordered(_worker_scan_chunk, chunks):
+            peaks_all.update(peaks_chunk)
+            done += len(peaks_chunk)
+            dt = time.perf_counter() - t0
+            print(f"  [variant] {done}/{n}  {dt:.1f}s "
+                  f"({dt/max(done,1)*1000:.0f} ms/tnp)", flush=True)
+    return peaks_all
 
 
 def _parallel_build(records: list[TnpRecord], shard_dir: Path,
@@ -246,7 +295,11 @@ def main() -> int:
                                        workers=args.workers)
     print(f"[chA-v5] running Channel A (fixed L=11, m>=8, tau=0, S=5)", flush=True)
     spec = spec_m_threshold_L11(m=8, tau=0, S=5)
-    peaks_by_tnp = run_variant(mt, spec)
+    if args.workers > 1:
+        peaks_by_tnp = _parallel_run_variant(mt, spec, args.shard_dir,
+                                                args.workers)
+    else:
+        peaks_by_tnp = run_variant(mt, spec)
 
     # Overall
     overall = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=None)
