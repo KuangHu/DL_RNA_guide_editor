@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.generator_v5.bag import (
+from scripts.generator_v5._deprecated_bag_v1_strict_loop import (
     generate_bag_end_to_end, load_flank_pool,
 )
 
