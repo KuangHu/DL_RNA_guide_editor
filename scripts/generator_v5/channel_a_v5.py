@@ -169,8 +169,12 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
     with open(v5_jsonl_path) as f:
         for line in f:
             r = json.loads(line)
-            if not r["labels"].get("is_positive"):
-                continue
+            # Accept both positives (is_positive=True with real gold_nc) and
+            # negatives (is_positive=False with gold_nc=-1). The MatchTable
+            # holds the same per-Tnp arrays either way; downstream analysis
+            # decides whether coverage means PPV_denom (positives) or FP rate
+            # (negatives) based on the sentinel gold_nc value.
+            pass
             tnp = r["transposase_id"]
             a = r["labels"].get("active_noncoding_index", 0) or 0
             ncs = r["inputs"]["noncoding_regions"]
