@@ -82,19 +82,36 @@ class RateTable:
     flank_pool_size: int
     p_hat: float                                  # observed non-N frequency in flank pool
 
-    def target_m_for_L(self, L: int, target_rate: float
-                        ) -> int:
-        """Single-m mode: pick the m closest to target_rate on LOG scale.
-        Retained for callers that want a single target; sample_difficulty
-        uses target_m_mixture_for_L instead so per-L rate hits the target
-        via a two-m mixture.
+    def target_m_for_L(self, L: int, target_rate: float,
+                        rate_floor: float = 0.15) -> int:
+        """CONSTRAINED single-m: argmin |ln(rate/target_rate)| subject to
+        rate >= rate_floor.
+
+        Rationale (user directive 2026-08-31, retracts mixture approach):
+        A two-m mixture (retracted target_m_mixture_for_L) achieves geom
+        mean 0.21 but produces per-site bimodal rates whose harder mode
+        (m+1) sits at OR BELOW Test 1a's 0.10 floor by construction,
+        pushing 20% of L=12 sites sub-floor. That's the wrong direction:
+        floor exists to protect against exactly this "guide too
+        distinctive" degeneracy. Adding mass at m+1 = feeding the failure.
+
+        Single-m constrained to rate >= floor selects the harder m only
+        when it's genuinely above the floor. Floor 0.15 chosen to keep a
+        cushion against per-site variance pushing near-floor rates below.
+        Reachable pool median rate becomes ~0.28 (not 0.21) — this is
+        arithmetic ceiling of integer-m in this L range, not a defect.
         """
-        candidates = [m for m in sorted(self.m_range) if (L, m) in self.rate]
+        candidates = [(m, self.rate[(L, m)])
+                        for m in sorted(self.m_range)
+                        if (L, m) in self.rate]
         if not candidates:
             raise KeyError(f"L={L} not covered by rate table")
+        valid = [(m, r) for m, r in candidates if r >= rate_floor]
+        if not valid:
+            # No m clears the floor -> fall back to highest-rate m
+            return max(candidates, key=lambda x: x[1])[0]
         lt = math.log(max(target_rate, 1e-6))
-        return min(candidates,
-                     key=lambda m: abs(math.log(max(self.rate[(L, m)], 1e-6)) - lt))
+        return min(valid, key=lambda x: abs(math.log(x[1]) - lt))[0]
 
     def target_m_mixture_for_L(self, L: int, target_rate: float
                                 ) -> list[tuple[int, float]]:
@@ -336,33 +353,22 @@ def sample_planted_m(rng: random.Random, target_m: int,
     return target_m - 2
 
 
-def _sample_from_mixture(rng: random.Random,
-                           mixture: list[tuple[int, float]]) -> int:
-    """Sample an m from [(m, p), ...] with sum(p) == 1."""
-    u = rng.random()
-    acc = 0.0
-    for m, p in mixture:
-        acc += p
-        if u <= acc:
-            return m
-    return mixture[-1][0]
-
-
 def sample_difficulty(rng: random.Random, rate_table: RateTable,
                         target_rate: float = DEFAULT_TARGET_RATE) -> Difficulty:
-    """Draw (L, nc_len, planted_m) for one bag. Uses the rate table
-    (empirical, from real flank pool) to reverse-solve a per-L m-mixture
-    whose geometric mean rate == target_rate. Base m sampled from the
-    mixture; planted_m then drawn from the 86/10/4 tail below base m.
+    """Draw (L, nc_len, planted_m) for one bag.
+
+    - target_m per L via constrained single-m (rate >= 0.15).
+    - planted_m from the 86/10/4 tail at {target_m, target_m-1,
+      target_m-2}. Tail is one-sided DOWNWARD (harder direction on rate);
+      never plants above target_m so Test 1a's floor stays safe.
     """
     L = sample_L(rng)
     nc_len = sample_nc_len(rng, L)
-    mixture = rate_table.target_m_mixture_for_L(L, target_rate)
-    base_m = _sample_from_mixture(rng, mixture)
-    planted_m = sample_planted_m(rng, base_m)
+    target_m = rate_table.target_m_for_L(L, target_rate)
+    planted_m = sample_planted_m(rng, target_m)
     return Difficulty(
         L=L, nc_len=nc_len, planted_m=planted_m,
-        target_m=base_m, target_rate=target_rate,
+        target_m=target_m, target_rate=target_rate,
     )
 
 
