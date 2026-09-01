@@ -41,8 +41,19 @@ from scripts.v5a_framework.match_table import (
     _build_common, _write_index, _write_shard, load as load_mt,
 )
 from scripts.v5a_framework.variant import (
-    Peak, spec_m_threshold_L11, run_variant,
+    Peak, spec_m_threshold_L11, spec_min_E_9_12, run_variant,
 )
+
+
+def _resolve_spec(name: str, negatives: bool = False):
+    """Named specs for the two modes reported in Channel A doc."""
+    if name == "m8":
+        # Mode 2: fixed L=11, m>=8, tau=0, S=5 (Durrant baseline)
+        return spec_m_threshold_L11(m=8, tau=0, S=5)
+    if name == "min_E":
+        # Mode 1: min-E over L in {9..12}, E<=4, tau=5, S=5 (X1' v3 dominant)
+        return spec_min_E_9_12(E=4.0, tau=5, S=5)
+    raise ValueError(f"unknown spec: {name!r}")
 
 
 # Worker-scope arg storage (set by initializer).
@@ -299,6 +310,10 @@ def main() -> int:
     ap.add_argument("--shard-dir", required=True)
     ap.add_argument("--report-out", default=None)
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
+    ap.add_argument("--spec", default="m8", choices=["m8", "min_E"],
+                     help="Channel A spec: m8 (Mode 2) or min_E (Mode 1)")
+    ap.add_argument("--treat-as-negatives", action="store_true",
+                     help="Interpret coverage as FP rate; skip PPV meaningfulness")
     args = ap.parse_args()
 
     shard_dir_path = Path(args.shard_dir)
@@ -332,8 +347,8 @@ def main() -> int:
               f"({args.workers} workers)", flush=True)
         mt, tnp_arch = build_v5_positive(args.v5_jsonl, args.shard_dir,
                                            workers=args.workers)
-    print(f"[chA-v5] running Channel A (fixed L=11, m>=8, tau=0, S=5)", flush=True)
-    spec = spec_m_threshold_L11(m=8, tau=0, S=5)
+    print(f"[chA-v5] running Channel A spec={args.spec}", flush=True)
+    spec = _resolve_spec(args.spec, negatives=args.treat_as_negatives)
     if args.workers > 1:
         peaks_by_tnp = _parallel_run_variant(mt, spec, args.shard_dir,
                                                 args.workers)

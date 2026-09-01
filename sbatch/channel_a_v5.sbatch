@@ -26,7 +26,8 @@ mkdir -p "$OUTBASE" "$CODEDIR/logs"
 : "${TAG:=v5}"
 
 SHARD_DIR=${OUTBASE}/mt_${TAG}
-REPORT=${OUTBASE}/channel_a_${TAG}.json
+: "${SPEC:=m8}"
+REPORT=${OUTBASE}/channel_a_${TAG}_${SPEC}.json
 
 echo "[$(date -Iseconds)] Channel A on V5"
 echo "  host:      $(hostname)"
@@ -38,10 +39,16 @@ echo "  python:    $PYTHON"
 
 cd "$CODEDIR"
 : "${WORKERS:=$(nproc)}"
+: "${SPEC:=m8}"
+EXTRA_ARGS=""
+if [ "${NEGATIVES:-0}" = "1" ]; then
+    EXTRA_ARGS="--treat-as-negatives"
+fi
 $PYTHON -m scripts.generator_v5.channel_a_v5 \
     --v5-jsonl "$V5_JSONL" \
     --shard-dir "$SHARD_DIR" \
     --report-out "$REPORT" \
-    --workers "$WORKERS"
+    --workers "$WORKERS" \
+    --spec "$SPEC" $EXTRA_ARGS
 
 echo "[$(date -Iseconds)] done"
