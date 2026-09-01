@@ -96,7 +96,9 @@ def main() -> int:
                 "is_reversed":    b.architecture.is_reversed_target,
                 "n_nc":           b.architecture.n_nc,
                 "n_positions":    b.difficulty.nc_len - b.difficulty.L + 1,
-                "competitor_count": len([p for p in s.all_matching_positions_on_nc]),
+                # Test 1's competitor_count: positions with m_max >= this
+                # site's planted_m (NOT the fixed m=8 downstream threshold).
+                "competitor_count": s.competitor_count_at_planted_m,
                 "m_at_planted":   s.m_at_planted,
                 "planted_start_pct": b.planted_start_on_nc / max(b.difficulty.nc_len - b.difficulty.L, 1),
             })
@@ -161,6 +163,36 @@ def main() -> int:
     ok_all = _report("all bags", mask_at_target, comp_count, rate,
                        planted_m, target_m, len(bags))
 
+    # === Test 4a: L-stratified ===
+    print("\n=== Test 4a: per-L stratification (target_m per L is what actually varies) ===")
+    print(f"  {'L':>3s} {'target_m':>9s} {'n_sites':>8s} "
+          f"{'rate_med':>9s} {'rate_p25':>9s} {'rate_p75':>9s} {'below_0.10':>11s}")
+    for L in sorted(set(L_arr.tolist())):
+        mask_L = (L_arr == L)
+        n_L = int(mask_L.sum())
+        if n_L == 0:
+            continue
+        rate_L = rate[mask_L]
+        # target_m for this L (from the bag's difficulty)
+        tm_L = int(np.median(target_m[mask_L]))
+        below = float((rate_L < TEST1_RATE_LO_FLOOR).mean())
+        print(f"  {L:>3d} {tm_L:>9d} {n_L:>8d} "
+              f"{float(np.median(rate_L)):>9.4f} "
+              f"{float(np.percentile(rate_L, 25)):>9.4f} "
+              f"{float(np.percentile(rate_L, 75)):>9.4f} "
+              f"{below:>11.4f}")
+
+    # For reference: also report rate stratified by (L, planted_m) fine-grain
+    print()
+    print(f"  Per (L, planted_m) fine-grain (only planted_m == target_m rows):")
+    for L in sorted(set(L_arr.tolist())):
+        mask = (L_arr == L) & (planted_m == target_m)
+        if mask.sum() < 5:
+            continue
+        r_med = float(np.median(rate[mask]))
+        pm = int(np.median(planted_m[mask]))
+        print(f"    L={L}, planted_m={pm}: n={int(mask.sum())}, rate_med={r_med:.4f}")
+
     # === Test 4: length-stratified quartiles ===
     print("\n=== Test 4: nc_len quartile stratification ===")
     q = np.quantile(nc_len_arr, [0, 0.25, 0.5, 0.75, 1.0])
@@ -169,8 +201,10 @@ def main() -> int:
         mask = (nc_len_arr >= lo) & (nc_len_arr <= hi if i == 3 else nc_len_arr < hi)
         if mask.sum() < 10:
             continue
+        # Slice mask_at_target to match the sub-arrays' size.
+        sub_at_target = mask_at_target[mask]
         _report(f"nc_len Q{i+1} [{int(lo)}, {int(hi)}]",
-                mask & mask_at_target, comp_count[mask], rate[mask],
+                sub_at_target, comp_count[mask], rate[mask],
                 planted_m[mask], target_m[mask], int(mask.sum()))
 
     # === Test 3 ===

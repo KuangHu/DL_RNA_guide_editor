@@ -84,18 +84,69 @@ class RateTable:
 
     def target_m_for_L(self, L: int, target_rate: float
                         ) -> int:
-        """m that minimizes |rate(L, m) - target_rate|. Ties broken to
-        the smaller m (harder tail).
-        Rationale: T-WT at (L=11, m=8) has empirical rate ~0.22 on random
-        nc — slightly above 0.21. A strict "smallest m such that rate <=
-        target" rule would overshoot to m=9 (rate ~0.02), collapsing the
-        competitor_count distribution. Closest-match preserves the T-WT
-        operating point at the natural anchor.
+        """Single-m mode: pick the m closest to target_rate on LOG scale.
+        Retained for callers that want a single target; sample_difficulty
+        uses target_m_mixture_for_L instead so per-L rate hits the target
+        via a two-m mixture.
         """
         candidates = [m for m in sorted(self.m_range) if (L, m) in self.rate]
         if not candidates:
             raise KeyError(f"L={L} not covered by rate table")
-        return min(candidates, key=lambda m: abs(self.rate[(L, m)] - target_rate))
+        lt = math.log(max(target_rate, 1e-6))
+        return min(candidates,
+                     key=lambda m: abs(math.log(max(self.rate[(L, m)], 1e-6)) - lt))
+
+    def target_m_mixture_for_L(self, L: int, target_rate: float
+                                ) -> list[tuple[int, float]]:
+        """Two-m mixture that hits target_rate on the geometric mean.
+
+        Motivation (2026-08-31): per-L stratified acceptance revealed
+        that a single target_m per L can't hit 0.21 because rate(L, m)
+        jumps by 3-8x between adjacent integer m's. Log-distance closest
+        match to a single m gave rate 0.094 (L=12), 0.204 (L=13),
+        0.371 (L=14), 0.247 (L=11) — a 4x spread across L. Pooled
+        median 0.216 masked this heterogeneity, and Test 1a's 15% below-
+        floor was 56% concentrated at L=12.
+
+        Fix: for each L, pick the two adjacent m values that bracket
+        log(target_rate), and use a Bernoulli mixture that satisfies
+        (1-p) * ln(rate(m_hi)) + p * ln(rate(m_lo)) = ln(target_rate).
+        m_lo = higher m (lower rate), m_hi = lower m (higher rate).
+
+        Returns [(m, p), ...] sorted by m ascending, sum of p == 1.
+        If no bracketing pair exists (target is above/below every rate),
+        returns a single-m assignment at the closest end.
+        """
+        candidates = [m for m in sorted(self.m_range) if (L, m) in self.rate]
+        if not candidates:
+            raise KeyError(f"L={L} not covered by rate table")
+        lt = math.log(max(target_rate, 1e-6))
+        # Find pair where rate(m_hi) >= target_rate >= rate(m_lo)
+        rates_sorted = [(m, self.rate[(L, m)]) for m in sorted(candidates)]
+        # Rate is monotone decreasing in m
+        m_hi = None
+        m_lo = None
+        for m, r in rates_sorted:
+            if r >= target_rate:
+                m_hi = m
+            elif m_hi is not None and m_lo is None:
+                m_lo = m
+                break
+        if m_hi is None:
+            # Every rate is below target_rate: cheapest (smallest m)
+            return [(rates_sorted[0][0], 1.0)]
+        if m_lo is None:
+            # Every rate above threshold covered by m_hi alone; hardest end
+            return [(m_hi, 1.0)]
+        r_hi = self.rate[(L, m_hi)]
+        r_lo = self.rate[(L, m_lo)]
+        ln_hi = math.log(max(r_hi, 1e-6))
+        ln_lo = math.log(max(r_lo, 1e-6))
+        if abs(ln_hi - ln_lo) < 1e-6:
+            return [(m_hi, 1.0)]
+        p_lo = (ln_hi - lt) / (ln_hi - ln_lo)
+        p_lo = max(0.0, min(1.0, p_lo))
+        return [(m_hi, 1.0 - p_lo), (m_lo, p_lo)]
 
     def to_json(self) -> dict:
         return {
@@ -285,17 +336,33 @@ def sample_planted_m(rng: random.Random, target_m: int,
     return target_m - 2
 
 
+def _sample_from_mixture(rng: random.Random,
+                           mixture: list[tuple[int, float]]) -> int:
+    """Sample an m from [(m, p), ...] with sum(p) == 1."""
+    u = rng.random()
+    acc = 0.0
+    for m, p in mixture:
+        acc += p
+        if u <= acc:
+            return m
+    return mixture[-1][0]
+
+
 def sample_difficulty(rng: random.Random, rate_table: RateTable,
                         target_rate: float = DEFAULT_TARGET_RATE) -> Difficulty:
     """Draw (L, nc_len, planted_m) for one bag. Uses the rate table
-    (empirical, from real flank pool) to reverse-solve target_m per L."""
+    (empirical, from real flank pool) to reverse-solve a per-L m-mixture
+    whose geometric mean rate == target_rate. Base m sampled from the
+    mixture; planted_m then drawn from the 86/10/4 tail below base m.
+    """
     L = sample_L(rng)
     nc_len = sample_nc_len(rng, L)
-    target_m = rate_table.target_m_for_L(L, target_rate)
-    planted_m = sample_planted_m(rng, target_m)
+    mixture = rate_table.target_m_mixture_for_L(L, target_rate)
+    base_m = _sample_from_mixture(rng, mixture)
+    planted_m = sample_planted_m(rng, base_m)
     return Difficulty(
         L=L, nc_len=nc_len, planted_m=planted_m,
-        target_m=target_m, target_rate=target_rate,
+        target_m=base_m, target_rate=target_rate,
     )
 
 
