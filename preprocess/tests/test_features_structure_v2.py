@@ -93,6 +93,20 @@ def main() -> int:
           non_zero_frac > 0.5,
           f"non-zero fraction = {non_zero_frac:.3f}")
 
+    # MATHEMATICAL BOUNDARY CHECK (catches pfl_fold_up indexing regressions).
+    # P(all L positions unpaired) <= P(any single position unpaired), so:
+    #   dG_open_uL >= -kT * ln(min p_ss over window)
+    #   dG_open_uL_pn * L >= dG_open_u1.max() over the window
+    # Equivalently: exp(-dG_open_uL_pn * L / kT) <= min(p_ss over win).
+    from preprocess.features_structure_v2 import KT_37C_KCAL_PER_MOL
+    n_win = len(feats.dG_open_uL_pn)
+    csum_pss_min = np.array([feats.p_ss[k : k + L].min() for k in range(n_win)])
+    joint_from_dg = np.exp(-feats.dG_open_uL_pn * L / KT_37C_KCAL_PER_MOL)
+    boundary_viol = int((joint_from_dg > csum_pss_min + 1e-12).sum())
+    check("P(joint) <= min(p_ss) over each window",
+          boundary_viol == 0,
+          f"violations = {boundary_viol} / {n_win}")
+
     # NaN in E_span/H_pair only allowed where windowed pair mass < eps
     # (compute the mask independently)
     pair_mass = feats.bpp.sum(axis=1)

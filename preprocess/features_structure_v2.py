@@ -97,7 +97,14 @@ EPS_PAIR_MASS = 1e-8
 CHANNEL_GOLD_SIGN: dict[str, int] = {
     "dG_open_u1":           -1,   # dG open cost; low = accessible
     "dG_open_uL_pn":        -1,   # per-nt open cost; low = accessible
-    "cooperativity_win_pn":  0,   # unknown direction; expect gold-anchor-specific — see 4.5' rerun
+    # Cooperativity direction: measured 2026-08-31 with correct indexing.
+    # Gold median +0.114 vs competitor median +0.970. Both positive
+    # (both regions weakly-to-strongly single-strand-cooperative), but
+    # gold is LOWER. Interpretation: gold straddles a stem-loop boundary,
+    # so the 11-nt window's positions don't all covary as one loop;
+    # competitor top-m sits in a long coherent single-strand region where
+    # all positions covary strongly. Sign -1: gold expected LOWER.
+    "cooperativity_win_pn": -1,
     "E_span_win":           -1,   # partner distance; short = internal loops
     "H_pair_win":           +1,   # partner entropy; diffuse = internal loop
     "p_ss_window":          +1,   # window mean P_ss; high = accessible
@@ -173,8 +180,18 @@ def _fold_compound_pf(seq: str) -> tuple:
 
 def _joint_dg_open_uL_per_nt(seq: str, L: int) -> np.ndarray:
     """True per-nt dG_open_uL from RNA.pfl_fold_up with global window and
-    global max_bp_span. Convention (ViennaRNA docs): up[i][u] = P(segment
-    starting at 1-indexed position i, length u, all unpaired).
+    global max_bp_span.
+
+    Convention (verified 2026-08-31 by boundary check P(joint) <= min(p_ss)):
+        up[i][u] = P(segment of length u ENDING at 1-indexed position i,
+                     all unpaired).
+    NOT the docstring's "starting at" — the docstring is wrong or ambiguous
+    on this point; convention A violated the P(joint) <= min p_ss bound on
+    22/167 T-WT windows, convention B satisfied it on all 167.
+
+    For a window starting at 0-indexed k, the window covers 0-indexed
+    [k, k+L-1] which is 1-indexed [k+1, k+L], ending at 1-indexed k+L.
+    So the joint probability is `up[k+L][L]`.
 
     Returns array of length (n - L + 1), with entry k for window starting
     at 0-indexed position k.
@@ -182,8 +199,9 @@ def _joint_dg_open_uL_per_nt(seq: str, L: int) -> np.ndarray:
     n = len(seq)
     rna = _rna_seq(seq)
     up = np.array(RNA.pfl_fold_up(rna, L, n, n), dtype=np.float64)
-    # up.shape == (n+1, L+1). Slice col L (segment length L) at rows 1..n-L+1.
-    p_all = up[1 : n - L + 2, L]
+    # up.shape == (n+1, L+1). For window starting at 0-idx k (k = 0..n-L),
+    # the segment ends at 1-indexed k+L, so read up[k+L, L].
+    p_all = up[L : n + 1, L]
     p_all = np.clip(p_all, 1e-30, 1.0)
     return -KT_37C_KCAL_PER_MOL * np.log(p_all) / L
 
