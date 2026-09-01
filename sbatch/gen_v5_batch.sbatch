@@ -22,7 +22,7 @@
 #SBATCH --qos=cf_normal
 #SBATCH --nodes=1
 #SBATCH --exclusive
-#SBATCH --time=1:00:00
+#SBATCH --time=2:00:00
 #SBATCH --output=logs/gen_v5_%x_%j.out
 #SBATCH --error=logs/gen_v5_%x_%j.err
 
