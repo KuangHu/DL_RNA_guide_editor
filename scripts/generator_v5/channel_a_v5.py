@@ -106,11 +106,21 @@ def _primary_pos(pks) -> float:
 
 
 def compute_channel_a(mt: MatchTable, peaks_by_tnp: dict, tnp_arch: dict,
-                        stratify_by: str | None = None) -> dict:
+                        stratify_by: str | None = None,
+                        restrict_to: dict | None = None) -> dict:
     """Return {stratum -> metrics} where stratum is either 'all' or a
-    value taken from tnp_arch[tnp_id][stratify_by]."""
+    value taken from tnp_arch[tnp_id][stratify_by].
+
+    restrict_to: optional dict of {arch_key: expected_value} to filter Tnps
+    (e.g. {"L": 11} to look only at the L=11 subset where the fixed-L=11
+    Channel A spec actually operates without floor effects).
+    """
     groups: dict[str, list[str]] = defaultdict(list)
     for tnp_id in mt.tnp_ids:
+        if restrict_to:
+            arch = tnp_arch.get(tnp_id, {})
+            if any(arch.get(k) != v for k, v in restrict_to.items()):
+                continue
         if stratify_by is None:
             groups["all"].append(tnp_id)
         else:
@@ -184,13 +194,30 @@ def main() -> int:
     _print_table("overall vs Durrant anchor (0.338 / 0.9565 / 0.9545 / 0.3231)",
                     overall)
 
-    # Per-arch stratifications
+    # Per-arch stratifications on the FULL corpus
     all_reports = {"overall": overall}
     for axis in ("L", "is_split", "orient", "n_nc", "tsd_width",
                    "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf"):
         r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis)
         all_reports[axis] = r
-        _print_table(f"stratified by {axis}", r)
+        _print_table(f"stratified by {axis} (all L)", r)
+
+    # Per-arch stratifications RESTRICTED TO L=11 (per user directive
+    # 2026-08-31: fixed-L=11 Channel A spec floors at L=13, L=14, so
+    # arch-axis analysis is only meaningful within the L=11 subset).
+    print("\n\n" + "=" * 60)
+    print("=== Per-arch stratifications restricted to L=11 subset ===")
+    print("=" * 60)
+    overall_L11 = compute_channel_a(mt, peaks_by_tnp, tnp_arch,
+                                      stratify_by=None, restrict_to={"L": 11})
+    all_reports["overall_L11"] = overall_L11
+    _print_table("overall L=11 only", overall_L11)
+    for axis in ("is_split", "orient", "n_nc", "tsd_width",
+                   "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf"):
+        r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis,
+                                restrict_to={"L": 11})
+        all_reports[f"{axis}_L11"] = r
+        _print_table(f"stratified by {axis} (L=11 only)", r)
 
     if args.report_out:
         Path(args.report_out).parent.mkdir(parents=True, exist_ok=True)
