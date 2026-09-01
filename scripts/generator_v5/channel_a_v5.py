@@ -326,8 +326,7 @@ def main() -> int:
     ap.add_argument("--report-out", default=None)
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     ap.add_argument("--spec", default="m8",
-                     choices=["m8", "min_E", "m9"],
-                     help="Channel A spec base")
+                     help="Channel A spec base (comma-separated for multi: m8,min_E)")
     ap.add_argument("--tau", type=int, default=None, help="Override spec tau")
     ap.add_argument("--S", type=int, default=None, help="Override spec S")
     ap.add_argument("--m", type=int, default=None, help="Override spec m (m8/m9 only)")
@@ -401,6 +400,43 @@ def main() -> int:
             with open(args.report_out, "w") as f:
                 json.dump({"grid": grid_out, "spec_base": args.spec}, f, indent=2)
             print(f"[chA-v5] grid report written to {args.report_out}")
+        return 0
+
+    # Support comma-separated spec list — run each on the same cached mt.
+    spec_names = [s.strip() for s in args.spec.split(",") if s.strip()]
+    if len(spec_names) > 1 and args.report_out:
+        # Auto-name output per spec
+        rep_stem = Path(args.report_out)
+        base = rep_stem.with_suffix("")
+        for sn in spec_names:
+            print(f"\n[chA-v5] === running spec={sn} ===", flush=True)
+            sp = _resolve_spec(sn, tau=args.tau, S=args.S, m=args.m,
+                                 negatives=args.treat_as_negatives)
+            if args.workers > 1:
+                peaks = _parallel_run_variant(mt, sp, args.shard_dir, args.workers)
+            else:
+                peaks = run_variant(mt, sp)
+            # Compute + emit reports per spec
+            overall = compute_channel_a(mt, peaks, tnp_arch, stratify_by=None)
+            _print_table(f"[{sn}] overall vs Durrant anchor", overall)
+            all_reports = {"overall": overall}
+            for axis in ("L", "is_split", "orient", "n_nc", "tsd_width",
+                           "tsd_relation", "has_5p_stem_loop_active",
+                           "ncr_pos_rel_orf", "nc_len_bucket",
+                           "mm_concentration", "mm_anchor"):
+                r = compute_channel_a(mt, peaks, tnp_arch, stratify_by=axis)
+                all_reports[axis] = r
+            all_reports["overall_L11"] = compute_channel_a(mt, peaks, tnp_arch,
+                                                              stratify_by=None,
+                                                              restrict_to={"L": 11})
+            for axis in ("mm_concentration", "mm_anchor", "is_split",
+                           "n_nc", "tsd_width", "nc_len_bucket"):
+                all_reports[f"{axis}_L11"] = compute_channel_a(
+                    mt, peaks, tnp_arch, stratify_by=axis, restrict_to={"L": 11})
+            out_path = f"{base}_{sn}.json"
+            with open(out_path, "w") as f:
+                json.dump(all_reports, f, indent=2)
+            print(f"[chA-v5] [{sn}] report written to {out_path}", flush=True)
         return 0
 
     tau_str = str(args.tau) if args.tau is not None else "default"
