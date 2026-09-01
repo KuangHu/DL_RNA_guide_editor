@@ -40,6 +40,14 @@ echo "  python:    $PYTHON"
 cd "$CODEDIR"
 : "${WORKERS:=$(nproc)}"
 : "${SPEC:=m8}"
+# SLURM --export uses comma as delimiter; use SPECS env with | (pipe)
+# separator if multiple specs needed sequentially on the same MatchTable.
+# Example: sbatch --export=...,SPECS="m8|min_E" sbatch/channel_a_v5.sbatch
+if [ -n "${SPECS:-}" ]; then
+    IFS='|' read -ra SPEC_LIST <<< "$SPECS"
+else
+    SPEC_LIST=("$SPEC")
+fi
 EXTRA_ARGS=""
 if [ "${NEGATIVES:-0}" = "1" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --treat-as-negatives"
@@ -56,11 +64,15 @@ fi
 if [ -n "${M_VAL:-}" ]; then
     EXTRA_ARGS="$EXTRA_ARGS --m $M_VAL"
 fi
-$PYTHON -m scripts.generator_v5.channel_a_v5 \
-    --v5-jsonl "$V5_JSONL" \
-    --shard-dir "$SHARD_DIR" \
-    --report-out "$REPORT" \
-    --workers "$WORKERS" \
-    --spec "$SPEC" $EXTRA_ARGS
+for one_spec in "${SPEC_LIST[@]}"; do
+    ONE_REPORT=${OUTBASE}/channel_a_${TAG}_${one_spec}.json
+    echo "[$(date -Iseconds)] running spec=$one_spec  -> $ONE_REPORT"
+    $PYTHON -m scripts.generator_v5.channel_a_v5 \
+        --v5-jsonl "$V5_JSONL" \
+        --shard-dir "$SHARD_DIR" \
+        --report-out "$ONE_REPORT" \
+        --workers "$WORKERS" \
+        --spec "$one_spec" $EXTRA_ARGS
+done
 
 echo "[$(date -Iseconds)] done"
