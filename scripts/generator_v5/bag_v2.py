@@ -212,15 +212,27 @@ def _reverse_complement(s: str) -> str:
     return s.translate(_COMPLEMENT)[::-1]
 
 
-def _plant_mismatches(guide: str, n_mismatches: int, rng: random.Random
-                        ) -> tuple[str, list[int]]:
+def _plant_mismatches(guide: str, n_mismatches: int, rng: random.Random,
+                        mm_concentration: str | None = None,
+                        mm_anchor: str | None = None) -> tuple[str, list[int]]:
+    """Return (mutated_target, mm_positions).
+
+    If mm_concentration+mm_anchor supplied (from the architecture axis),
+    positions follow that 2D geometry pattern (see
+    scripts.generator_v5.architecture.sample_mismatch_positions).
+    Otherwise falls back to uniform-random placement.
+    """
     if n_mismatches == 0:
         return guide, []
     L = len(guide)
     if n_mismatches > L:
         raise ValueError(f"n_mismatches ({n_mismatches}) > L ({L})")
-    positions = rng.sample(range(L), n_mismatches)
-    positions.sort()
+    if mm_concentration is not None and mm_anchor is not None:
+        from scripts.generator_v5.architecture import sample_mismatch_positions
+        positions = sample_mismatch_positions(rng, L, n_mismatches,
+                                                 mm_concentration, mm_anchor)
+    else:
+        positions = sorted(rng.sample(range(L), n_mismatches))
     chars = list(guide)
     for p in positions:
         original = chars[p]
@@ -238,6 +250,8 @@ def _plant_target_on_flank(
     is_reversed: bool,
     n_mismatches: int,
     rng: random.Random,
+    mm_concentration: str | None = None,
+    mm_anchor: str | None = None,
 ) -> tuple[str, int, int, int, int, str, list[int]]:
     """Plant target on flank.
 
@@ -263,7 +277,9 @@ def _plant_target_on_flank(
     B_len = len(guide_B)
     total_width = A_len + (split_gap if is_split else 0) + B_len
 
-    mut_full, mm_pos = _plant_mismatches(guide_A + guide_B, n_mismatches, rng)
+    mut_full, mm_pos = _plant_mismatches(guide_A + guide_B, n_mismatches, rng,
+                                             mm_concentration=mm_concentration,
+                                             mm_anchor=mm_anchor)
     mut_A = mut_full[:A_len]
     mut_B = mut_full[A_len:]
 
@@ -549,6 +565,8 @@ def build_bag(
             base_flank, guide_A, guide_B,
             arch.is_split, arch.split_gap,
             arch.is_reversed_target, site_n_mismatches, rng,
+            mm_concentration=arch.mm_concentration,
+            mm_anchor=arch.mm_anchor,
         )
         # A_start=plant_start; A_end=slot boundary (left block end);
         # B_start=slot boundary (right block start); B_end=plant_end.

@@ -55,6 +55,32 @@ from typing import Literal
 
 DEFAULT_A_LO = 5
 DEFAULT_A_HI = 8
+
+# 2D mismatch geometry axis (added 2026-09-01 after T-WT diagnostic).
+# T-WT gold sites cluster 89.5% of mismatches at positions {3, 9, 10} on
+# L=11 — this leaves an L=9 subwindow with only 1 mismatch (m=8), which
+# is what Mode 1 (E<4 admission) needs. V5's uniform placement gives
+# essentially zero such subwindows. To let Channel A's Mode 1 have real
+# signal to detect (or explicitly NOT), we randomize this per bag along
+# two dimensions:
+#
+#   concentration ∈ {clustered, dispersed}
+#     clustered  : places 2 mm at one end/middle, 1 mm elsewhere
+#                   → guarantees SOME L=L-2 subwindow has 1 mm (m=L-3)
+#     dispersed  : places 3 mm at spread positions
+#                   → guarantees NO L=L-2 subwindow has < 2 mm
+#
+#   anchor ∈ {5p, 3p, mid}
+#     which end/region hosts the cluster (for clustered) or spread center
+#     (for dispersed).
+#
+# Six patterns total, uniform weight (per user directive — no family-
+# specific bias like weighting toward T-WT-shape).
+DEFAULT_MM_GEOM_CONCENTRATIONS = ("clustered", "dispersed")
+# "mid" dropped: (clustered, mid) is impossible on L=11 (mid mm blocks
+# every L=9 window); (dispersed, mid) with 3 mm at {0, L//2, L-1} leaves
+# window [1:L-1] with 1 mm — that's actually clustered, not dispersed.
+DEFAULT_MM_GEOM_ANCHORS = ("5p", "3p")
 DEFAULT_B_LO = 3
 DEFAULT_B_HI = 8
 DEFAULT_SPLIT_PROB = 0.18                # 18% of bags planted as split targets
@@ -101,6 +127,8 @@ class Architecture:
     active_nc_index: int         # which one carries the guide
     tsd: TSD
     ncr_pos_rel_orf: NcrPos
+    mm_concentration: str        # {clustered, dispersed}
+    mm_anchor: str               # {5p, 3p, mid}
 
     def to_metadata(self) -> dict:
         """JSONable representation for the bag record's arch{} field."""
@@ -116,6 +144,8 @@ class Architecture:
             "tsd_width":        self.tsd.width,
             "tsd_relation":     self.tsd.relation,
             "ncr_pos_rel_orf":  self.ncr_pos_rel_orf,
+            "mm_concentration": self.mm_concentration,
+            "mm_anchor":        self.mm_anchor,
         }
 
 
@@ -179,12 +209,68 @@ def sample_ncr_pos_rel_orf(rng: random.Random,
     return rng.choice(choices)  # type: ignore[return-value]
 
 
+def sample_mm_geometry(rng: random.Random) -> tuple[str, str]:
+    """Uniformly sample (mm_concentration, mm_anchor) from the 2D grid."""
+    return (rng.choice(DEFAULT_MM_GEOM_CONCENTRATIONS),
+              rng.choice(DEFAULT_MM_GEOM_ANCHORS))
+
+
+def sample_mismatch_positions(
+    rng: random.Random,
+    L: int,
+    n_mismatches: int,
+    concentration: str,
+    anchor: str,
+) -> list[int]:
+    """Return `n_mismatches` distinct positions in [0, L) laid out per
+    the (concentration, anchor) axis.
+
+    Only applied when n_mismatches >= 2 (below that geometry is
+    meaningless). For n_mismatches > 3 the axis places the first three
+    per the pattern and the remainder uniformly on the leftover positions.
+    For n_mismatches < 2 falls back to uniform.
+    """
+    if n_mismatches < 2 or L < 3:
+        # Below threshold — uniform fallback
+        return sorted(rng.sample(range(L), n_mismatches))
+
+    forced: list[int] = []
+    if concentration == "clustered":
+        if anchor == "5p":
+            forced = [0, 1]
+        else:                                       # 3p
+            forced = [L - 2, L - 1]
+    else:                                            # dispersed
+        # For 3 mm on L>=11, place at {2, 4, 6} or {L-3, L-5, L-7} — all
+        # in the interior so every L-2 subwindow contains >=2 mm.
+        # Verified: at L=11 mm={2,4,6} → windows [0:9]/[1:10]/[2:10] all
+        # have 3 mm → max m=6, guarantees Mode 1 blind.
+        if anchor == "5p":
+            forced = [2, 4, 6][:min(3, n_mismatches)]
+        else:                                       # 3p
+            forced = [L - 3, L - 5, L - 7][:min(3, n_mismatches)]
+        forced = sorted(set(p for p in forced if 0 <= p < L))
+
+    # Remove duplicates while preserving deterministic set
+    forced_set = list(dict.fromkeys(forced))
+    remaining = n_mismatches - len(forced_set)
+    if remaining > 0:
+        available = [p for p in range(L) if p not in forced_set]
+        if remaining > len(available):
+            # Fallback: shouldn't happen for our L range, but be safe
+            return sorted(rng.sample(range(L), n_mismatches))
+        extras = rng.sample(available, remaining)
+        forced_set = sorted(set(forced_set) | set(extras))
+    return sorted(forced_set)[:n_mismatches]
+
+
 def sample_architecture(rng: random.Random, L: int) -> Architecture:
     """Draw all architecture axes for a bag given its guide length L."""
     guide = sample_guide_composition(rng, L)
     is_split = sample_is_split(rng)
     split_gap = sample_split_gap(rng) if is_split else 0
     n_nc = sample_n_nc(rng)
+    mm_conc, mm_anch = sample_mm_geometry(rng)
     return Architecture(
         guide=guide,
         is_split=is_split,
@@ -194,6 +280,8 @@ def sample_architecture(rng: random.Random, L: int) -> Architecture:
         active_nc_index=sample_active_index(rng, n_nc),
         tsd=sample_tsd(rng),
         ncr_pos_rel_orf=sample_ncr_pos_rel_orf(rng),
+        mm_concentration=mm_conc,
+        mm_anchor=mm_anch,
     )
 
 
