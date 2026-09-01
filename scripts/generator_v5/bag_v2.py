@@ -71,8 +71,9 @@ class Site:
     planted_B_end_on_flank: int
     mutated_target: str                              # actually planted concatenation A_mut + gap_original + B_mut (for split) or A_mut+B_mut (contig)
     mismatch_positions: list[int]                    # 0-indexed in the guide (concatenated A+B), not counting the gap
-    all_matching_positions_on_nc: list[int]          # nc positions where m_max >= threshold
+    all_matching_positions_on_nc: list[int]          # nc positions where m_max >= m_threshold_for_all_matching (fixed 8; downstream MIL candidates)
     m_at_planted: int                                # m measured at the planted nc position with an L-window
+    competitor_count_at_planted_m: int                # nc positions where m_max >= planted_m (defines Test 1's competitor set)
 
 
 @dataclass(frozen=True)
@@ -337,6 +338,9 @@ def build_bag(
             m_at_planted = int(m_arr[planted_start_on_nc])
         else:
             m_at_planted = 0
+        # competitor_count_at_planted_m: positions with m_max >= this bag's
+        # planted_m. This is Test 1's definition, not the fixed-m=8 one.
+        competitor_count_at_planted_m = int((m_arr >= diff.planted_m).sum())
         sites.append(Site(
             site_idx=i,
             flank=flank_final,
@@ -348,6 +352,7 @@ def build_bag(
             mismatch_positions=mm_pos,
             all_matching_positions_on_nc=matching,
             m_at_planted=m_at_planted,
+            competitor_count_at_planted_m=competitor_count_at_planted_m,
         ))
 
     return Bag(
