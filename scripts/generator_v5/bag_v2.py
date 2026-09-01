@@ -353,6 +353,141 @@ def sample_ncrna(rng: random.Random, nc_len: int) -> str:
     return "".join(rng.choices("ACGT", k=nc_len))
 
 
+def build_negative_bag(
+    bag_id: str,
+    rng: random.Random,
+    flank_pool: list[str],
+    rate_table: RateTable,
+    n_sites: int = DEFAULT_N_SITES,
+) -> "NegativeBag | None":
+    """Assemble one NEGATIVE bag (no guide planted).
+
+    Structurally identical to positive bags on the parts Channel A sees:
+    shared nc (random ACGT + fold + structure channels), 5 distinct real
+    bacterial flanks, N_nc >= 1 ncRNAs. NO target planted. Any peak
+    Channel A emits on such a bag is a false positive.
+
+    Sampled axes (kept for stratified FP-rate analysis):
+      L (nominal, drives structure L for guide_length field)
+      nc_len (from same U[70,300] distribution as positives)
+      n_nc, active_nc_index (uniform)
+      has_5p_stem_loop_active (post-fold check)
+      ncr_pos_rel_orf (metadata)
+
+    Not sampled (irrelevant without a target):
+      is_split, split_gap, is_reversed_target, tsd_*, A/B decomposition
+    """
+    diff = sample_difficulty(rng, rate_table)
+    from scripts.generator_v5.architecture import (
+        DEFAULT_N_NC_CHOICES, DEFAULT_NCR_POS,
+    )
+    n_nc = rng.choice(DEFAULT_N_NC_CHOICES)
+    active_idx = rng.randrange(n_nc)
+    ncr_pos = rng.choice(DEFAULT_NCR_POS)
+
+    ncs = [sample_ncrna(rng, diff.nc_len) for _ in range(n_nc)]
+    feats = [compute_features_v2(nc, guide_length=diff.L) for nc in ncs]
+    _assert_inactive_distribution_matched(ncs, active_idx)
+
+    # 5' stem-loop flags
+    import RNA
+    sl_flags: list[bool] = []
+    for nc in ncs:
+        fc = RNA.fold_compound(nc.replace("T", "U"))
+        structure, _ = fc.mfe()
+        sl_flags.append(check_5p_stem_loop(structure))
+
+    # Sample flanks; NO planting — pool flanks stay untouched.
+    if len(flank_pool) < n_sites:
+        raise RuntimeError(f"flank pool size {len(flank_pool)} < n_sites {n_sites}")
+    fl_idx = rng.sample(range(len(flank_pool)), n_sites)
+    flanks = [flank_pool[k] for k in fl_idx]
+
+    return NegativeBag(
+        bag_id=bag_id,
+        L=diff.L,
+        nc_len=diff.nc_len,
+        n_nc=n_nc,
+        active_nc_index=active_idx,
+        ncr_pos_rel_orf=ncr_pos,
+        ncrna_sequences=ncs,
+        ncrna_features=feats,
+        has_5p_stem_loop_per_nc=sl_flags,
+        flanks=flanks,
+    )
+
+
+@dataclass(frozen=True)
+class NegativeBag:
+    """A no-plant bag. 5 flanks, one shared nc, no target."""
+    bag_id: str
+    L: int
+    nc_len: int
+    n_nc: int
+    active_nc_index: int
+    ncr_pos_rel_orf: str
+    ncrna_sequences: list[str]
+    ncrna_features: list[StructureFeaturesV2]
+    has_5p_stem_loop_per_nc: list[bool]
+    flanks: list[str]
+
+    def to_jsonl(self) -> list[dict]:
+        """Emit per-site records. Uses the same schema shape as positives
+        so downstream MatchTable build can construct SiteRecords; gold
+        fields set to sentinel -1 (channel_a_v5 will treat these as
+        negatives via is_positive=False)."""
+        active_nc = self.ncrna_sequences[self.active_nc_index]
+        # Precompute per-nc structure channels (shared across sites)
+        def _nan_to_none(a):
+            out = []
+            for v in a.tolist():
+                out.append(None if (v != v) else float(v))
+            return out
+        nc_channels = []
+        for i, (nc, f) in enumerate(zip(self.ncrna_sequences, self.ncrna_features)):
+            nc_channels.append({
+                "role": "active" if i == self.active_nc_index else "inactive",
+                "has_5p_stem_loop": self.has_5p_stem_loop_per_nc[i],
+                "dG_open_u1": [float(v) for v in f.dG_open_u1.tolist()],
+                "dG_open_uL_pn": [float(v) for v in f.dG_open_uL_pn.tolist()],
+                "cooperativity_win_pn": [float(v) for v in f.cooperativity_win_pn.tolist()],
+                "E_span_win": _nan_to_none(f.E_span_win),
+                "H_pair_win": _nan_to_none(f.H_pair_win),
+                "windowed_valid": [bool(v) for v in f.windowed_valid.tolist()],
+            })
+
+        arch = {
+            "L": self.L,
+            "n_nc": self.n_nc,
+            "active_nc_index": self.active_nc_index,
+            "ncr_pos_rel_orf": self.ncr_pos_rel_orf,
+            "is_negative": True,
+            "has_5p_stem_loop_active": self.has_5p_stem_loop_per_nc[self.active_nc_index],
+        }
+        recs = []
+        for i, fl in enumerate(self.flanks):
+            recs.append({
+                "site_id": f"{self.bag_id}_site_{i:04d}",
+                "transposase_id": self.bag_id,
+                "ncrna_id": f"{self.bag_id}_ncrna",
+                "inputs": {
+                    "flank": fl,
+                    "noncoding_regions": list(self.ncrna_sequences),
+                },
+                "labels": {
+                    "is_positive": False,
+                    "guide_length": self.L,
+                    "active_noncoding_index": self.active_nc_index,
+                    "num_noncoding_regions": self.n_nc,
+                    "guide_span_in_active_noncoding": [-1, -1],
+                    "ncrna_length": len(active_nc),
+                    "arch": arch,
+                    "nc_channels": nc_channels,
+                },
+            })
+        return recs
+
+
 def build_bag(
     bag_id: str,
     rng: random.Random,
