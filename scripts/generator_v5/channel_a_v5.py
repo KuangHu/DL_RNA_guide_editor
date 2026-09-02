@@ -461,10 +461,19 @@ def main() -> int:
     all_reports = {"overall": overall}
     for axis in ("L", "is_split", "orient", "n_nc", "tsd_width",
                    "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf",
-                   "nc_len_bucket"):
+                   "nc_len_bucket", "mm_concentration", "mm_anchor"):
         r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis)
         all_reports[axis] = r
         _print_table(f"stratified by {axis} (all L)", r)
+    # 2D L x mm_concentration (per user directive 2026-09-01: L and
+    # mm_concentration are coupled via the "which subwindow qualifies for
+    # E<4" mechanism, so the marginal L profile is no longer a clean read).
+    for L_val in (11, 12, 13, 14):
+        for conc in ("clustered", "dispersed"):
+            r = compute_channel_a(mt, peaks_by_tnp, tnp_arch,
+                                     stratify_by=None,
+                                     restrict_to={"L": L_val, "mm_concentration": conc})
+            all_reports[f"L{L_val}_{conc}"] = r
 
     # Per-arch stratifications RESTRICTED TO L=11 (per user directive
     # 2026-08-31: fixed-L=11 Channel A spec floors at L=13, L=14, so
@@ -478,7 +487,7 @@ def main() -> int:
     _print_table("overall L=11 only", overall_L11)
     for axis in ("is_split", "orient", "n_nc", "tsd_width",
                    "tsd_relation", "has_5p_stem_loop_active", "ncr_pos_rel_orf",
-                   "nc_len_bucket"):
+                   "nc_len_bucket", "mm_concentration", "mm_anchor"):
         r = compute_channel_a(mt, peaks_by_tnp, tnp_arch, stratify_by=axis,
                                 restrict_to={"L": 11})
         all_reports[f"{axis}_L11"] = r
