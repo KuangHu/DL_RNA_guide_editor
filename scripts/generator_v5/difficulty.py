@@ -57,12 +57,16 @@ REAL_FLANK_POOL_BASEDIR = "/global/scratch/users/kh36969/DL_novel_guide_editor/r
 
 @dataclass(frozen=True)
 class Difficulty:
-    """One realized (L, nc_len, planted_m) tuple."""
+    """One realized (L, nc_len, planted_m, target_m, target_rate, n_sites)
+    tuple. n_sites (Stage 1c, 2026-09-03) is drawn uniformly from
+    DEFAULT_N_SITES_RANGE (inclusive). It defaults to 5 for pre-1c
+    corpora that don't emit the field."""
     L: int
     nc_len: int
     planted_m: int
     target_m: int
     target_rate: float
+    n_sites: int = 5
 
 
 @dataclass
@@ -77,15 +81,52 @@ class RateTable:
     """
     L_range: tuple[int, ...]
     m_range: tuple[int, ...]
-    rate: dict[tuple[int, int], float]           # (L, m) -> median rate
+    rate: dict[tuple[int, int], float]           # (L, m) -> median rate at gc=0.5 baseline (uniform ACGT)
     n_probe: int
     flank_pool_size: int
     p_hat: float                                  # observed non-N frequency in flank pool
+    # v6 Stage 1f (2026-09-03): gc-conditioned rate table.
+    # rate_by_gc[gc_bin_center] holds the (L, m) -> rate dict measured
+    # with nc sampled at that gc. Default empty dict = legacy pre-1f
+    # table; load_or_build_rate_table detects the missing field and
+    # kicks off a rebuild for the new bins.
+    # See finding_theta_scan_1c_v6 for why difficulty must not couple
+    # with a structural axis (leak of "high GC easier" into the model).
+    gc_bins: tuple[float, ...] = ()
+    rate_by_gc: dict[float, dict[tuple[int, int], float]] = field(default_factory=dict)
+
+    def _rate_dict_for_gc(self, gc: float | None) -> dict[tuple[int, int], float]:
+        """Select the (L, m) → rate dict for a given gc target.
+
+        gc=None → legacy baseline (self.rate, at gc=0.5 uniform ACGT).
+        gc given → nearest gc_bin center from self.gc_bins if the
+        conditioned table is populated; else falls back to baseline
+        with a warning (in a build_bag chain we do NOT want to silently
+        use the wrong table).
+        """
+        if gc is None:
+            return self.rate
+        if not self.gc_bins or not self.rate_by_gc:
+            # No conditioned table exists — fall back with an audit-visible
+            # warning. Under normal 1f-ready run, load_or_build_rate_table
+            # ensures gc_bins is populated.
+            return self.rate
+        # Snap gc to nearest bin center
+        nearest = min(self.gc_bins, key=lambda b: abs(b - gc))
+        return self.rate_by_gc.get(nearest, self.rate)
 
     def target_m_for_L(self, L: int, target_rate: float,
-                        rate_floor: float = 0.15) -> int:
+                        rate_floor: float = 0.15,
+                        gc: float | None = None) -> int:
         """CONSTRAINED single-m: argmin |ln(rate/target_rate)| subject to
         rate >= rate_floor.
+
+        `gc`: v6 Stage 1f — when given, select the gc-conditioned rate
+        table instead of the uniform-ACGT baseline. `gc=0.5` is
+        byte-identical to `gc=None` because the gc=0.5 bin IS the
+        uniform-ACGT reference. This prevents the "GC → rate → target_m
+        → difficulty" coupling from leaking a difficulty gradient onto
+        the structural axis.
 
         Rationale (user directive 2026-08-31, retracts mixture approach):
         A two-m mixture (retracted target_m_mixture_for_L) achieves geom
@@ -101,11 +142,12 @@ class RateTable:
         Reachable pool median rate becomes ~0.28 (not 0.21) — this is
         arithmetic ceiling of integer-m in this L range, not a defect.
         """
-        candidates = [(m, self.rate[(L, m)])
+        rate_dict = self._rate_dict_for_gc(gc)
+        candidates = [(m, rate_dict[(L, m)])
                         for m in sorted(self.m_range)
-                        if (L, m) in self.rate]
+                        if (L, m) in rate_dict]
         if not candidates:
-            raise KeyError(f"L={L} not covered by rate table")
+            raise KeyError(f"L={L} not covered by rate table (gc={gc})")
         valid = [(m, r) for m, r in candidates if r >= rate_floor]
         if not valid:
             # No m clears the floor -> fall back to highest-rate m
@@ -173,6 +215,9 @@ class RateTable:
             "n_probe":  self.n_probe,
             "flank_pool_size": self.flank_pool_size,
             "p_hat":    self.p_hat,
+            "gc_bins":  list(self.gc_bins),
+            "rate_by_gc": {f"{gc}": {f"{L},{m}": v for (L, m), v in rd.items()}
+                              for gc, rd in self.rate_by_gc.items()},
         }
 
     @classmethod
@@ -181,11 +226,21 @@ class RateTable:
         for k, v in d["rate"].items():
             L, m = k.split(",")
             rate[(int(L), int(m))] = float(v)
+        gc_bins = tuple(d.get("gc_bins", ()))
+        rate_by_gc: dict[float, dict[tuple[int, int], float]] = {}
+        for gc_str, rd in d.get("rate_by_gc", {}).items():
+            per_gc = {}
+            for k, v in rd.items():
+                L, m = k.split(",")
+                per_gc[(int(L), int(m))] = float(v)
+            rate_by_gc[float(gc_str)] = per_gc
         return cls(
             L_range=tuple(d["L_range"]), m_range=tuple(d["m_range"]),
             rate=rate, n_probe=int(d["n_probe"]),
             flank_pool_size=int(d["flank_pool_size"]),
             p_hat=float(d["p_hat"]),
+            gc_bins=gc_bins,
+            rate_by_gc=rate_by_gc,
         )
 
 
@@ -250,34 +305,31 @@ def _pos_m_max(nc: str, flank: str, L: int) -> np.ndarray:
     return np.maximum(w_f.max(axis=1)[:n], w_r.max(axis=1)[:n])
 
 
-def build_rate_table(
-    L_range: tuple[int, ...] = DEFAULT_L_CHOICES,
-    m_range: tuple[int, ...] = (5, 6, 7, 8, 9, 10, 11, 12),
-    n_probe: int = 500,
-    nc_len_range: tuple[int, int] = (DEFAULT_NC_LEN_LO, DEFAULT_NC_LEN_HI),
-    seed: int = 0,
-    flank_pool: list[str] | None = None,
-) -> RateTable:
-    """Empirically measure rate(L, m) = median over n_probe pairs of
-    (competitor_count / n_positions) at m_threshold m.
+DEFAULT_GC_BINS: tuple[float, ...] = (0.30, 0.40, 0.50, 0.60)
 
-    Sampling: nc uniform ACGT at length ~ U[nc_len_range]; flank drawn
-    from the real 2,763-flank pool (both must match generator's own
-    sampling to make the table transferable)."""
-    if flank_pool is None:
-        flank_pool = _load_real_flank_pool()
-    p_hat = _observed_p_hat(flank_pool)
 
-    rng = random.Random(seed)
+def _measure_rates_one_gc(rng: random.Random, gc: float,
+                             L_range: tuple[int, ...],
+                             m_range: tuple[int, ...],
+                             nc_len_range: tuple[int, int],
+                             n_probe: int,
+                             flank_pool: list[str],
+                             ) -> dict[tuple[int, int], float]:
+    """Measure median (L, m) rates at a specific nc gc composition."""
     rates: dict[tuple[int, int], list[float]] = {(L, m): []
                                                     for L in L_range
                                                     for m in m_range}
     n_pool = len(flank_pool)
+    p_at = (1.0 - gc) / 2.0
+    p_gc = gc / 2.0
+    weights = [p_at, p_gc, p_gc, p_at]     # order: A, C, G, T
     for _ in range(n_probe):
         nc_len = rng.randint(*nc_len_range)
-        nc = "".join(rng.choices("ACGT", k=nc_len))
+        if gc == 0.5:
+            nc = "".join(rng.choices("ACGT", k=nc_len))
+        else:
+            nc = "".join(rng.choices("ACGT", weights=weights, k=nc_len))
         fl = flank_pool[rng.randrange(n_pool)]
-        # Precompute per-L per-position m_max once per (nc, flank) pair
         for L in L_range:
             m_arr = _pos_m_max(nc, fl, L)
             if m_arr.size == 0:
@@ -286,17 +338,61 @@ def build_rate_table(
             for m in m_range:
                 rate = float((m_arr >= m).sum()) / n_pos
                 rates[(L, m)].append(rate)
-    median_rates: dict[tuple[int, int], float] = {}
-    for k, vs in rates.items():
-        if vs:
-            median_rates[k] = float(np.median(vs))
+    return {k: float(np.median(vs)) for k, vs in rates.items() if vs}
+
+
+def build_rate_table(
+    L_range: tuple[int, ...] = DEFAULT_L_CHOICES,
+    m_range: tuple[int, ...] = (5, 6, 7, 8, 9, 10, 11, 12),
+    n_probe: int = 500,
+    nc_len_range: tuple[int, int] = (DEFAULT_NC_LEN_LO, DEFAULT_NC_LEN_HI),
+    seed: int = 0,
+    flank_pool: list[str] | None = None,
+    gc_bins: tuple[float, ...] = DEFAULT_GC_BINS,
+) -> RateTable:
+    """Empirically measure rate(L, m, gc) = median over n_probe pairs of
+    (competitor_count / n_positions) at m_threshold m for each gc in
+    `gc_bins`. The baseline (self.rate) is the gc=0.5 bin (uniform ACGT),
+    kept for pre-1f compat.
+
+    Sampling: nc at length ~ U[nc_len_range] with base composition
+    p(A)=p(T)=(1-gc)/2, p(G)=p(C)=gc/2. Flank drawn from the real 2,763-
+    flank pool. gc=0.5 branch is the uniform-ACGT path used pre-1f;
+    others are the 1f conditioning bins."""
+    if flank_pool is None:
+        flank_pool = _load_real_flank_pool()
+    p_hat = _observed_p_hat(flank_pool)
+    n_pool = len(flank_pool)
+
+    # Baseline (gc=0.5) is measured with the SAME seed as the pre-1f
+    # rate table so `rate` numbers are byte-identical (or as close as
+    # RNG-sequence-equivalent) to the pre-1f cached table. This is
+    # what preserves target_m_for_L(L=11, 0.21) == 8 exactly at gc=0.5
+    # pin, which A8a byte-identity depends on.
+    rng_baseline = random.Random(seed)
+    baseline_rate = _measure_rates_one_gc(rng_baseline, 0.5, L_range, m_range,
+                                                nc_len_range, n_probe, flank_pool)
+    rate_by_gc: dict[float, dict[tuple[int, int], float]] = {}
+    for gc in gc_bins:
+        if abs(gc - 0.5) < 1e-9:
+            rate_by_gc[0.5] = baseline_rate      # reuse baseline; identical seed
+            continue
+        # Seed per-gc RNG so each non-baseline bin's samples are independent
+        # of the baseline.
+        rng = random.Random(seed + int(round(gc * 1000)))
+        rd = _measure_rates_one_gc(rng, gc, L_range, m_range,
+                                       nc_len_range, n_probe, flank_pool)
+        rate_by_gc[gc] = rd
+
     return RateTable(
         L_range=tuple(L_range),
         m_range=tuple(m_range),
-        rate=median_rates,
+        rate=baseline_rate,
         n_probe=n_probe,
         flank_pool_size=n_pool,
         p_hat=p_hat,
+        gc_bins=tuple(gc_bins),
+        rate_by_gc=rate_by_gc,
     )
 
 
@@ -354,21 +450,36 @@ def sample_planted_m(rng: random.Random, target_m: int,
 
 
 def sample_difficulty(rng: random.Random, rate_table: RateTable,
-                        target_rate: float = DEFAULT_TARGET_RATE) -> Difficulty:
-    """Draw (L, nc_len, planted_m) for one bag.
+                        target_rate: float = DEFAULT_TARGET_RATE,
+                        n_sites_override: int | None = None,
+                        gc: float | None = None,
+                        ) -> Difficulty:
+    """Draw (L, nc_len, planted_m, n_sites) for one bag.
 
     - target_m per L via constrained single-m (rate >= 0.15).
     - planted_m from the 86/10/4 tail at {target_m, target_m-1,
       target_m-2}. Tail is one-sided DOWNWARD (harder direction on rate);
       never plants above target_m so Test 1a's floor stays safe.
+    - n_sites uniform on DEFAULT_N_SITES_RANGE (inclusive). Under a
+      pinned n_sites (A8a compat), pass n_sites_override=5.
     """
+    from scripts.generator_v5.architecture import DEFAULT_N_SITES_RANGE
     L = sample_L(rng)
     nc_len = sample_nc_len(rng, L)
-    target_m = rate_table.target_m_for_L(L, target_rate)
+    # Stage 1f: gc-conditioned target_m. gc=None uses the uniform-ACGT
+    # baseline (byte-identical to pre-1f). gc=0.5 also uses that baseline
+    # (the gc=0.5 rate_by_gc bin holds the same numbers as `rate`).
+    target_m = rate_table.target_m_for_L(L, target_rate, gc=gc)
     planted_m = sample_planted_m(rng, target_m)
+    if n_sites_override is not None:
+        n_sites = int(n_sites_override)
+    else:
+        lo, hi = DEFAULT_N_SITES_RANGE
+        n_sites = rng.randint(lo, hi)
     return Difficulty(
         L=L, nc_len=nc_len, planted_m=planted_m,
         target_m=target_m, target_rate=target_rate,
+        n_sites=n_sites,
     )
 
 
@@ -379,11 +490,21 @@ _DEFAULT_RATE_TABLE_PATH = "/global/scratch/users/kh36969/DL_novel_guide_editor/
 
 def load_or_build_rate_table(path: str = _DEFAULT_RATE_TABLE_PATH,
                                 rebuild: bool = False) -> RateTable:
-    """Cache the rate table on disk so downstream imports don't rebuild it."""
+    """Cache the rate table on disk so downstream imports don't rebuild it.
+
+    Stage 1f (2026-09-03): also rebuild when the cached table lacks gc
+    bins. Callers that need the gc-conditioned table (i.e. anything
+    running the gc_target axis unpinned) get a clear failure loud
+    enough to notice: build takes ~5-15 min for 4 bins.
+    """
     p = Path(path)
     if not rebuild and p.exists():
         with open(p) as f:
-            return RateTable.from_json(json.load(f))
+            tbl = RateTable.from_json(json.load(f))
+        if tbl.gc_bins and tbl.rate_by_gc:
+            return tbl
+        print(f"[difficulty] cached rate table at {path} lacks gc bins — "
+              f"rebuilding with Stage 1f conditioning", flush=True)
     tbl = build_rate_table()
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w") as f:

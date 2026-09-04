@@ -34,7 +34,7 @@ class VariantSpec:
     L_mode: LMode
     L_value: tuple[int, ...]        # single-element tuple for fixed, multi for min_over
     threshold: float                # m for m_threshold, E for E_threshold, k for E_topk
-    S_threshold: int
+    S_threshold: int                # ABSOLUTE number of sites required (fallback + when theta is None)
     tau: float
     orient_constraint: bool = True
     peak_min_dist: int = 5
@@ -42,12 +42,53 @@ class VariantSpec:
                                           # never a filter, always a label. Junction masking
                                           # would delete guide target when target_flank_start=0
                                           # so "mask" is intentionally NOT in the enum.
+    # v6 Stage 1c: proportion threshold theta = S / n_sites (per-Tnp).
+    # When theta is set (not None), the effective absolute threshold per
+    # Tnp = ceil(theta * len(tnp.sites)); S_threshold is IGNORED for the
+    # gate but retained on the spec object for identity/reporting.
+    # theta = 1.0  ≡ "all sites must hit" (Stage 1c default, matches S=5
+    # at n_sites=5 in semantics but scales with n_sites).
+    #
+    # HARD ANALYTIC LOWER BOUND (2026-09-03, θ scan v2) — NC-AXIS ONLY.
+    # Under Mode 2 (m≥8) with n_positions ≈ 170 and per-position per-
+    # site hit rate q ≈ 0.21 (== "P(m ≥ 8 at some flank offset)",
+    # already maxed over flank_argmax), expected FP peaks per bag =
+    #   n_positions × P(Bin(n_sites, q) ≥ ⌈theta·n_sites⌉).
+    # Values of theta that push this ≥ 1 give cov → 1 by background
+    # alone and PPV → 0 under NC-AXIS ONLY detection. Per-n_sites minima:
+    #   n=3: no valid theta (background covers every bag at any S)
+    #   n=4: theta ≥ 1.0
+    #   n=5: theta ≥ 1.0
+    #   n=6: theta ≥ 0.833  (S ≥ 5)
+    #   n=7: theta ≥ 0.714  (S ≥ 5)
+    #   n=8: theta ≥ 0.750  (S ≥ 6)
+    #
+    # IMPORTANT: adding flank-offset consistency (arch.flank_offset_mode
+    # == "consistent" with jitter ±2, 2026-09-02) DROPS the effective q
+    # by ~250×. Under a coherent-flank detector the per-triple
+    # p ≈ 1.2e-3, cell p ≈ 1.2e-2 over ~3700 cells, giving
+    # E[FP] ≈ 0.006 at n_sites=3 — i.e., n_sites=3 becomes viable.
+    # The "n=3 unreachable" claim above applies ONLY to detectors that
+    # ignore flank coherence. See finding_theta_scan_1c_v6.md.
+    theta: float | None = None
+    # v6 Stage 1h (2026-09-03): flank-side cross-site coherence.
+    # "off"    → each site independently maxes over flank offsets (pre-1h path)
+    # "jitter" → at each nc position, admit only sites whose flank_argmax(p)
+    #            lies within ±flank_jitter of the median flank_argmax(p)
+    #            computed over sites that pass the m threshold at p.
+    #            Requires MatchArrays.flank_argmax_by_excl populated.
+    #            Median over ADMITTED sites, not all sites — so noise
+    #            argmax values from missed sites don't pollute the center.
+    flank_coherence: str = "off"
+    flank_jitter: int = 2
 
     def key(self) -> str:
         L = "L" + "-".join(str(x) for x in self.L_value)
         oc = "oc" if self.orient_constraint else "np"
+        s_part = (f"theta{self.theta}" if self.theta is not None
+                    else f"S{self.S_threshold}")
         return (f"{self.admission}|{L}|thr={self.threshold}|"
-                f"S{self.S_threshold}|tau{self.tau}|{oc}|"
+                f"{s_part}|tau{self.tau}|{oc}|"
                 f"md{self.peak_min_dist}|tsd={self.tsd_handling}")
 
 
@@ -248,6 +289,92 @@ def _site_hits_for_orient(mt: MatchTable, tnp_id: str, orient: Orient,
     return out
 
 
+def _S_with_flank_coherence(mt: MatchTable, tnp_id: str, orient: Orient,
+                                spec: VariantSpec, nc_len_pos: int,
+                                per_site_excl_w: list[int] | None = None
+                                ) -> np.ndarray:
+    """Stage 1h — per-nc-position S under spec.flank_coherence='jitter'.
+
+    ASSERT: MatchTable stores flank_argmax ONLY at excl_w=0 (storage
+    economy: full-width store cost +140% on Stage 2 corpora). Under
+    flank_coherence='jitter' with tsd_handling='partition' (which
+    requires excl_w > 0 per-site), the argmax at that excl_w is not
+    populated. Rather than silently return zeros or fall back to
+    excl_w=0's argmax (which is WRONG for the TSD-partition path),
+    raise. To combine the two, either (a) expand argmax storage to
+    all excl widths and rebuild shards, or (b) drop tsd_handling
+    when using flank_coherence.
+
+    At each nc position p:
+      1. Collect (site_i, flank_argmax(p)) over sites that pass the m
+         admission at p (using the same `_admitted_positions` logic).
+      2. Median flank_argmax = median over admitted sites (not all).
+      3. Keep only admitted sites with |argmax(p) - median| <= jitter.
+      4. S(p) = count of kept sites.
+
+    Only supports L_mode='fixed'. Falls back to the pre-1h max-based S
+    when flank_argmax is unavailable (pre-1h shards).
+    """
+    tnp = mt.tnps[tnp_id]
+    L = spec.L_value[0]
+    n_sites = len(tnp.sites)
+    threshold = int(spec.threshold)
+    jitter = spec.flank_jitter
+    # Per-site m + argmax arrays at excl_w
+    m_arrs: list[np.ndarray] = []
+    a_arrs: list[np.ndarray | None] = []
+    for i, s in enumerate(tnp.sites):
+        w = per_site_excl_w[i] if per_site_excl_w is not None else 0
+        if w != 0:
+            raise ValueError(
+                f"flank_coherence='jitter' requires excl_w=0 per site "
+                f"(argmax stored only at excl_w=0). Got excl_w={w} for "
+                f"site {i} of {tnp_id}. To combine flank_coherence with "
+                f"tsd_handling='partition', rebuild shards with argmax at "
+                f"all excl widths (drop the excl_w=0-only trim in "
+                f"match_table._write_shard).")
+        ma = mt.get(tnp_id, s.site_idx, orient, L)
+        m_arrs.append(ma.m_max_by_excl.get(w, ma.m_max))
+        a_arrs.append(ma.flank_argmax_by_excl.get(w))
+    # Pad arrays to nc_len_pos for uniform indexing
+    m_stack = np.zeros((n_sites, nc_len_pos), dtype=np.int8)
+    a_stack = np.full((n_sites, nc_len_pos), -1, dtype=np.int32)
+    for i in range(n_sites):
+        n = min(m_arrs[i].shape[0], nc_len_pos)
+        if n > 0:
+            m_stack[i, :n] = m_arrs[i][:n]
+        if a_arrs[i] is not None:
+            n = min(a_arrs[i].shape[0], nc_len_pos)
+            if n > 0:
+                a_stack[i, :n] = a_arrs[i][:n]
+    # Admission mask per site per position (m>=threshold under m_threshold
+    # admission; for E_* rules fall back to _admitted_positions per site).
+    if spec.admission == "m_threshold":
+        admitted = m_stack >= threshold
+    else:
+        admitted = np.zeros_like(m_stack, dtype=bool)
+        for i in range(n_sites):
+            flank_len = len(tnp.sites[i].flank)
+            adm_set = _admitted_positions(
+                m_arrs[i], L, len(tnp.nc), flank_len,
+                spec.admission, spec.threshold)
+            for p in adm_set:
+                if p < nc_len_pos:
+                    admitted[i, p] = True
+    S = np.zeros(nc_len_pos, dtype=np.float64)
+    # For each position, median over admitted sites' argmax; then filter.
+    # Vectorized enough: use masked arrays.
+    for p in range(nc_len_pos):
+        mask = admitted[:, p] & (a_stack[:, p] >= 0)
+        if not mask.any():
+            continue
+        argmaxes = a_stack[mask, p]
+        med = float(np.median(argmaxes))
+        coherent = np.abs(argmaxes - med) <= jitter
+        S[p] = float(coherent.sum())
+    return S
+
+
 def _aggregate_S_over_orients(mt: MatchTable, tnp_id: str, spec: VariantSpec,
                                 nc_len_pos: int,
                                 per_site_excl_w: list[int] | None = None
@@ -273,9 +400,9 @@ def run_variant(mt: MatchTable, spec: VariantSpec) -> dict[str, list[Peak]]:
 
     Peak-finding uses S_all only — the partition never drops candidates.
     """
+    import math as _math
     ref_L = spec.L_value[0]
     peaks_by_tnp: dict[str, list[Peak]] = {}
-    kernel_thresh = float(spec.S_threshold) - 0.5 if spec.tau > 0 else float(spec.S_threshold)
 
     for tnp_id in mt.tnp_ids:
         tnp = mt.tnps[tnp_id]
@@ -284,17 +411,43 @@ def run_variant(mt: MatchTable, spec: VariantSpec) -> dict[str, list[Peak]]:
             peaks_by_tnp[tnp_id] = []
             continue
 
+        # Per-Tnp effective absolute threshold:
+        #   theta given  → ceil(theta * n_sites)  (clamped to [1, n_sites])
+        #   theta None   → spec.S_threshold       (legacy S=5 anchor)
+        n_sites_this = len(tnp.sites)
+        if spec.theta is not None:
+            S_eff = max(1, min(n_sites_this,
+                                 _math.ceil(spec.theta * n_sites_this)))
+        else:
+            S_eff = spec.S_threshold
+        kernel_thresh = float(S_eff) - 0.5 if spec.tau > 0 else float(S_eff)
+
         # --- S_all pass (excl_w=0 for all sites) ---
+        # Stage 1h: under spec.flank_coherence != "off", replace the
+        # per-orient S computation with the coherent version. Off path
+        # unchanged → byte-identical to pre-1h detection (verified via
+        # A8a re-run).
         if spec.orient_constraint:
             per_orient_S_all: list[np.ndarray] = []
             per_orient_names: list[str] = []
             for orient in mt.orients:
-                hits = _site_hits_for_orient(mt, tnp_id, orient, spec, None)
-                per_orient_S_all.append(_apply_kernel_max(hits, nc_len_pos, spec.tau))
+                if spec.flank_coherence == "off":
+                    hits = _site_hits_for_orient(mt, tnp_id, orient, spec, None)
+                    per_orient_S_all.append(_apply_kernel_max(hits, nc_len_pos, spec.tau))
+                else:
+                    per_orient_S_all.append(_S_with_flank_coherence(
+                        mt, tnp_id, orient, spec, nc_len_pos, None))
                 per_orient_names.append(orient)
         else:
-            _, per_orient_S_all, per_orient_names = _aggregate_S_over_orients(
-                mt, tnp_id, spec, nc_len_pos, None)
+            if spec.flank_coherence == "off":
+                _, per_orient_S_all, per_orient_names = _aggregate_S_over_orients(
+                    mt, tnp_id, spec, nc_len_pos, None)
+            else:
+                per_orient_S_all = []
+                per_orient_names = list(mt.orients)
+                for orient in mt.orients:
+                    per_orient_S_all.append(_S_with_flank_coherence(
+                        mt, tnp_id, orient, spec, nc_len_pos, None))
 
         # --- Optional S_outside_TSD pass ---
         per_orient_S_out: list[np.ndarray] | None = None
@@ -340,13 +493,35 @@ def run_variant(mt: MatchTable, spec: VariantSpec) -> dict[str, list[Peak]]:
 # ---------- canonical spec catalog ----------
 
 def spec_m_threshold_L11(m: int = 8, tau: float = 0, S: int = 5,
-                          orient_constraint: bool = True) -> VariantSpec:
-    """Historical Channel A baseline: fixed L=11, m>=8."""
+                          orient_constraint: bool = True,
+                          theta: float | None = None,
+                          flank_coherence: str = "off",
+                          flank_jitter: int = 2) -> VariantSpec:
+    """Historical Channel A baseline: fixed L=11, m>=8.
+
+    Under Stage 1c: pass `theta` (e.g. `theta=1.0` for "all sites")
+    to use the proportion threshold — required when n_sites varies per
+    bag. When `theta` is None (default), S is the absolute threshold
+    (pre-1c compat).
+
+    Under Stage 1h: pass `flank_coherence="jitter"` to require cross-
+    site flank-argmax agreement within ±flank_jitter. Byte-identity
+    with pre-1h detection preserved at `flank_coherence="off"` (verified
+    on the A8a corpus)."""
+    if theta is not None:
+        name = f"m_thresh_L11_m{m}_tau{tau}_theta{theta}"
+    else:
+        name = f"m_thresh_L11_m{m}_tau{tau}_S{S}"
+    if flank_coherence != "off":
+        name += f"_flank{flank_coherence}{flank_jitter}"
     return VariantSpec(
-        name=f"m_thresh_L11_m{m}_tau{tau}_S{S}",
+        name=name,
         admission="m_threshold", L_mode="fixed", L_value=(11,),
         threshold=float(m), S_threshold=S, tau=tau,
         orient_constraint=orient_constraint,
+        theta=theta,
+        flank_coherence=flank_coherence,
+        flank_jitter=flank_jitter,
     )
 
 

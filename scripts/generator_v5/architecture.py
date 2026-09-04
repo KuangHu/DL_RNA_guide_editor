@@ -92,6 +92,28 @@ DEFAULT_TSD_WIDTHS = (0, 2, 5, 8, 9, 12)  # uniform
 DEFAULT_TSD_RELATIONS = ("before", "after", "both_sides", "none")
 DEFAULT_NCR_POS = ("upstream", "downstream", "inline")
 
+# flank_offset_mode — 2nd coherence axis (nc-side coherence was already the
+# guide/nc/nc_position axes; flank-side coherence was missed until 2026-09-02).
+# Mechanism: target position relative to the insertion junction is set by the
+# transposase geometry — fixed within one system, arbitrary across systems.
+# Durrant calibration: 73% of sites at offset=0 with bag-shared alignment
+# → the calibration establishes THAT bag-internal coherence exists + sets the
+#   jitter scale
+# → NOT used to set the offset distribution (that is IS110-specific).
+# The `inconsistent` value replays the pre-2026-09-02 behavior (per-site
+# random) and is a new negative-mode form: nc-coherent but flank-incoherent,
+# a real signature of non-guided systems with target preference.
+DEFAULT_FLANK_OFFSET_MODES: tuple[str, ...] = ("consistent", "inconsistent")
+DEFAULT_FLANK_JITTER: int = 2   # ±nt, prevents zero-variance signature
+
+# ---- v6 axes (2026-09-03; wired in `docs/generator_v6_handoff.md`) ----
+# Ranges locked by measurements A / B / verify_end_to_end / align_error.
+# Do NOT narrow these to "safe" values — the hard cells are the point.
+DEFAULT_NC_HOMOLOGY_RATES: tuple[float, ...] = (0.90, 0.95, 0.97, 0.99, 0.995)
+DEFAULT_ACCESSIBILITY_TARGETS: tuple[float, float] = (0.40, 0.95)  # uniform-range
+DEFAULT_GC_TARGET_RANGE: tuple[float, float] = (0.25, 0.65)         # uniform-range
+DEFAULT_N_SITES_RANGE: tuple[int, int] = (3, 8)                     # inclusive
+
 
 TsdRelation = Literal["before", "after", "both_sides", "none"]
 NcrPos = Literal["upstream", "downstream", "inline"]
@@ -129,6 +151,26 @@ class Architecture:
     ncr_pos_rel_orf: NcrPos
     mm_concentration: str        # {clustered, dispersed}
     mm_anchor: str               # {5p, 3p, mid}
+    flank_offset_mode: str = "inconsistent"    # {consistent, inconsistent} — 2026-09-02
+    flank_jitter: int = DEFAULT_FLANK_JITTER    # ±nt in consistent mode
+    # v6 nc-homology axis (2026-09-03). Uniform per bag; default 1.0
+    # preserves pre-v6 (site == canonical) behavior for compat when the
+    # axis is turned off. See docs/generator_v6_handoff.md.
+    nc_homology_rate: float = 1.0
+    # v6 Stage 1e (2026-09-03): accessibility target percentile.
+    # Replaces the fixed μ=0.85 that came from only 2 anchor points
+    # (T-WT, ISEc21). Per-bag axis; the guide placement sampler uses
+    # this as the target μ. Default 0.85 preserves pre-1e behavior;
+    # a run that turns the axis on samples uniformly in [0.4, 0.95].
+    accessibility_target_percentile: float = 0.85
+    # v6 Stage 1f (2026-09-03): GC target for canonical nc sampling.
+    # p(A)=p(T)=(1-gc)/2, p(G)=p(C)=gc/2. Default 0.5 preserves pre-1f
+    # uniform-ACGT behavior BYTE-IDENTICALLY (rng.choices with equal
+    # weights consumes the same RNG state as unweighted — verified
+    # 2026-09-03). Under 1e×1f interaction: high GC × high mu can
+    # exhaust candidate windows -> placement failure. Failure rate
+    # per (gc, mu) 2D cell is a Stage 3 acceptance metric.
+    gc_target: float = 0.5
 
     def to_metadata(self) -> dict:
         """JSONable representation for the bag record's arch{} field."""
@@ -146,7 +188,22 @@ class Architecture:
             "ncr_pos_rel_orf":  self.ncr_pos_rel_orf,
             "mm_concentration": self.mm_concentration,
             "mm_anchor":        self.mm_anchor,
+            "flank_offset_mode": self.flank_offset_mode,
+            "flank_jitter":     self.flank_jitter,
+            "nc_homology_rate": self.nc_homology_rate,
+            "accessibility_target_percentile": self.accessibility_target_percentile,
+            "gc_target": self.gc_target,
         }
+
+
+def sample_flank_offset_mode(rng: random.Random,
+                                choices: tuple[str, ...] = DEFAULT_FLANK_OFFSET_MODES
+                                ) -> str:
+    """Uniformly sample a flank_offset_mode. `consistent` = bag-shared
+    plant_start with per-site ±jitter (matches Durrant's coherence axis).
+    `inconsistent` = per-site random (V5 pre-2026-09-02 default; a distinct
+    negative-shape when combined with nc-coherent placements)."""
+    return rng.choice(choices)
 
 
 def sample_guide_composition(rng: random.Random, L: int,
@@ -222,55 +279,103 @@ def sample_mismatch_positions(
     concentration: str,
     anchor: str,
 ) -> list[int]:
-    """Return `n_mismatches` distinct positions in [0, L) laid out per
-    the (concentration, anchor) axis.
+    """Return `n_mismatches` distinct positions in [0, L), sampled
+    uniformly within the (visible | blind) equivalence class specified
+    by `concentration`.
 
-    Only applied when n_mismatches >= 2 (below that geometry is
-    meaningless). For n_mismatches > 3 the axis places the first three
-    per the pattern and the remainder uniformly on the leftover positions.
-    For n_mismatches < 2 falls back to uniform.
+    Constrained-sampling implementation (2026-09-02) — the old hard-
+    coded {0,1}/{L-2,L-1}/{2,4,6}/{L-3,L-5,L-7} positions were memorable
+    signatures that Channel B could learn to identify without touching
+    cross-site coherence. Replaced by class-uniform draws:
+
+      concentration=clustered  → uniform over "visible" tuples (∃ Mode-1
+                                 subwindow with <= 1 mm)
+      concentration=dispersed  → uniform over "blind" tuples (∀ subwindow
+                                 has >= 2 mm)
+
+    The `anchor` parameter is retained in the signature for backward
+    compat and downstream diagnostic stratification, but no longer
+    influences position selection — 5p vs 3p is a mirror of the same
+    class, and class-uniform sampling covers both symmetrically. If
+    Channel A metrics stratify equally by mm_anchor after regen, this
+    claim is confirmed.
+
+    See `constrained_mm.py` for the enumeration + classifier. Falls back
+    to uniform when the requested class is empty at (L, n_mm) — e.g.,
+    L=11 n_mm=4 has no visible tuples (impossible to fit <= 1 mm in any
+    9-nt subwindow), so "clustered" degrades gracefully to blind.
     """
-    if n_mismatches < 2 or L < 3:
-        # Below threshold — uniform fallback
-        return sorted(rng.sample(range(L), n_mismatches))
-
-    forced: list[int] = []
-    if concentration == "clustered":
-        if anchor == "5p":
-            forced = [0, 1]
-        else:                                       # 3p
-            forced = [L - 2, L - 1]
-    else:                                            # dispersed
-        # For 3 mm on L>=11, place at {2, 4, 6} or {L-3, L-5, L-7} — all
-        # in the interior so every L-2 subwindow contains >=2 mm.
-        # Verified: at L=11 mm={2,4,6} → windows [0:9]/[1:10]/[2:10] all
-        # have 3 mm → max m=6, guarantees Mode 1 blind.
-        if anchor == "5p":
-            forced = [2, 4, 6][:min(3, n_mismatches)]
-        else:                                       # 3p
-            forced = [L - 3, L - 5, L - 7][:min(3, n_mismatches)]
-        forced = sorted(set(p for p in forced if 0 <= p < L))
-
-    # Remove duplicates while preserving deterministic set
-    forced_set = list(dict.fromkeys(forced))
-    remaining = n_mismatches - len(forced_set)
-    if remaining > 0:
-        available = [p for p in range(L) if p not in forced_set]
-        if remaining > len(available):
-            # Fallback: shouldn't happen for our L range, but be safe
-            return sorted(rng.sample(range(L), n_mismatches))
-        extras = rng.sample(available, remaining)
-        forced_set = sorted(set(forced_set) | set(extras))
-    return sorted(forced_set)[:n_mismatches]
+    from scripts.generator_v5.constrained_mm import (
+        sample_mismatch_positions_constrained,
+    )
+    return sample_mismatch_positions_constrained(
+        rng, L, n_mismatches, concentration=concentration, anchor=anchor,
+    )
 
 
-def sample_architecture(rng: random.Random, L: int) -> Architecture:
-    """Draw all architecture axes for a bag given its guide length L."""
+def sample_nc_homology_rate(rng: random.Random,
+                               choices: tuple[float, ...] = DEFAULT_NC_HOMOLOGY_RATES
+                               ) -> float:
+    """Uniformly sample a per-bag nc_homology_rate from the axis grid."""
+    return rng.choice(choices)
+
+
+def sample_accessibility_target_percentile(
+    rng: random.Random,
+    axis_range: tuple[float, float] = DEFAULT_ACCESSIBILITY_TARGETS,
+) -> float:
+    """Uniform-in-range per-bag accessibility target percentile (μ for
+    the soft θ_pss %ile guide-placement sampler). Stage 1e (2026-09-03)."""
+    lo, hi = axis_range
+    return rng.uniform(lo, hi)
+
+
+def sample_gc_target(
+    rng: random.Random,
+    axis_range: tuple[float, float] = DEFAULT_GC_TARGET_RANGE,
+) -> float:
+    """Uniform-in-range per-bag GC target for canonical nc sampling.
+    Stage 1f (2026-09-03)."""
+    lo, hi = axis_range
+    return rng.uniform(lo, hi)
+
+
+def sample_architecture(rng: random.Random, L: int,
+                          nc_homology_rate_override: float | None = None,
+                          flank_offset_mode_override: str | None = None,
+                          accessibility_target_percentile_override: float | None = None,
+                          gc_target_override: float | None = None,
+                          ) -> Architecture:
+    """Draw all architecture axes for a bag given its guide length L.
+
+    `nc_homology_rate_override`: when supplied, use this exact value for
+    the nc_homology_rate axis instead of sampling. A8a uses 1.0 (identity
+    map anchor); A8a-1 uses 0.95 (cross-validation with verify script).
+    `flank_offset_mode_override`: when supplied, pin flank_offset_mode to
+    that value. A8a passes "inconsistent" so RNG state matches the 50K
+    constrained pre-flank-axis anchor (0.4864/0.9681/0.4356).
+    `accessibility_target_percentile_override`: pin the μ used by
+    `ncrna_sampler_v2.sample_guide_placement`. Passing 0.85 preserves
+    pre-1e behavior (fixed μ=0.85, no extra RNG consumed). None samples
+    uniformly from DEFAULT_ACCESSIBILITY_TARGETS.
+    """
     guide = sample_guide_composition(rng, L)
     is_split = sample_is_split(rng)
     split_gap = sample_split_gap(rng) if is_split else 0
     n_nc = sample_n_nc(rng)
     mm_conc, mm_anch = sample_mm_geometry(rng)
+    if nc_homology_rate_override is not None:
+        nc_hom = float(nc_homology_rate_override)
+    else:
+        nc_hom = sample_nc_homology_rate(rng)
+    if accessibility_target_percentile_override is not None:
+        access_pct = float(accessibility_target_percentile_override)
+    else:
+        access_pct = sample_accessibility_target_percentile(rng)
+    if gc_target_override is not None:
+        gc = float(gc_target_override)
+    else:
+        gc = sample_gc_target(rng)
     return Architecture(
         guide=guide,
         is_split=is_split,
@@ -282,6 +387,13 @@ def sample_architecture(rng: random.Random, L: int) -> Architecture:
         ncr_pos_rel_orf=sample_ncr_pos_rel_orf(rng),
         mm_concentration=mm_conc,
         mm_anchor=mm_anch,
+        flank_offset_mode=(flank_offset_mode_override
+                             if flank_offset_mode_override is not None
+                             else sample_flank_offset_mode(rng)),
+        flank_jitter=DEFAULT_FLANK_JITTER,
+        nc_homology_rate=nc_hom,
+        accessibility_target_percentile=access_pct,
+        gc_target=gc,
     )
 
 

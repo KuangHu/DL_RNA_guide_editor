@@ -197,15 +197,61 @@ depends on: at each Tnp, all sites share the same guide, and the
 guide-target consistency across sites is what the S=k conjunction
 detects.
 
+**Cross-site coherence has TWO axes, not one** — added 2026-09-02 after
+Check 3 (below) caught the fourth axis missing from V5. Every fidelity
+audit must check both:
+
+| axis                    | real data                                    | V4.2 / V5 pre-2026-09-02 |
+|-------------------------|----------------------------------------------|--------------------------|
+| shared guide sequence   | ✓                                            | ✗ (V4.2: 0/5000 shared)  |
+| shared ncRNA            | ✓                                            | ✗ (V4.2: 0/5000 shared)  |
+| shared nc position      | median spread 1 nt (T-WT)                    | median 7 nt (V4.2)       |
+| **shared flank position** | 73% at offset 0 (Durrant target_flank_start) | **std 26.8 nt (random)** |
+
+The first three were caught by W10 / W10' at the time; the fourth
+survived because the fidelity audit only inspected the nc side.
+**Coherence is a two-sided property. Any fidelity check must look at
+both the nc axis and the flank axis, together.** This is the rule that
+would have prevented the flank-axis miss: not a check-list of things
+to look for, but a symmetry principle applied to every audit.
+
 The generator must produce sites in bags:
 
 - Draw one guide sequence per Tnp bag.
 - Generate all N_bag sites (N_bag = 5 for the baseline calibration
   match) as insertions of that same guide's target into different
   flanks.
-- Position spread across sites: draw from `Normal(0, 1)` nt centered
-  on the planted position (T-WT range=[49, 49] gives ~1 nt spread as
-  observed).
+- Position spread across sites on the nc axis: draw from `Normal(0, 1)`
+  nt centered on the planted position (T-WT range=[49, 49] gives ~1 nt
+  spread as observed).
+- Position spread across sites on the flank axis: draw from `Normal(0, 2)`
+  nt jitter around a bag-shared `bag_flank_offset` (Durrant target
+  distribution: 73% at offset 0, ~25% interior). The bag_flank_offset
+  is one draw per bag from a NEW architecture axis, `flank_offset_mode`:
+
+### `flank_offset_mode` (2026-09-02 addition — 4th coherence axis)
+
+Discrete uniform over `{junction, interior}` per bag.
+
+- `junction`: `bag_flank_offset = 0`. Matches Durrant's 73% junction-
+  adjacent targets.
+- `interior`: `bag_flank_offset` uniform in
+  `[flank_len // 3, 2 * flank_len // 3]`. Matches Durrant's ~25%
+  interior-target class.
+
+Per-site plant position = `bag_flank_offset + rng.randint(-2, 2)`
+clamped to `[0, flank_len - target_width]`. The jitter is not optional:
+zero-variance would replay the mm-anchor {0,1} lesson (a fixed
+architectural signature that Channel B can learn as a shortcut). ±2 nt
+is chosen to match the tolerant-matcher shift Durrant already induces
+on the alignment.
+
+The 50/50 split between `junction` and `interior` is not Durrant's
+observed 73/25 — deliberately uniform so no single family's distribution
+is baked in. Different Tnp families have different junction preferences
+(some IS110 subfamilies favor interior; ISEc21 favors 0). Uniform mode
+sampling per bag preserves the axis without hardcoding the class
+ratio.
 
 Detection tests will run on the generated bags exactly as on the
 Durrant corpus.

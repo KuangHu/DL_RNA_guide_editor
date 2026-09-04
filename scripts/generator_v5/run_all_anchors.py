@@ -34,17 +34,21 @@ from pathlib import Path
 
 ANCHORS = [
     ("A1 cross-impl Durrant anchor",
-     ["python", "-m", "scripts.generator_v5.tests.test_durrant_anchor_via_channel_a_v5"]),
+     [sys.executable, "-m", "scripts.generator_v5.tests.test_durrant_anchor_via_channel_a_v5"]),
     ("A2 framework Durrant anchor",
-     ["python", "-m", "scripts.v5a_framework.tests.test_tau0_anchor"]),
+     [sys.executable, "-m", "scripts.v5a_framework.tests.test_tau0_anchor"]),
     ("A3 features_structure_v2 T-WT",
-     ["python", "-m", "preprocess.tests.test_features_structure_v2"]),
+     [sys.executable, "-m", "preprocess.tests.test_features_structure_v2"]),
     ("A4 difficulty rate table + T-WT anchor",
-     ["python", "-m", "scripts.generator_v5.tests.test_difficulty"]),
+     [sys.executable, "-m", "scripts.generator_v5.tests.test_difficulty"]),
     ("A5 architecture axes",
-     ["python", "-m", "scripts.generator_v5.tests.test_architecture"]),
+     [sys.executable, "-m", "scripts.generator_v5.tests.test_architecture"]),
     ("A6 acceptance b (T-WT PASS, V4.2 FAIL)",
-     ["python", "-m", "scripts.v5a_framework.tests.b_acceptance_validation"]),
+     [sys.executable, "-m", "scripts.v5a_framework.tests.b_acceptance_validation"]),
+    ("A7 candidates_v2 → Channel A → Durrant anchor (T-WT, L=11 only)",
+     [sys.executable, "-m", "scripts.generator_v5.tests.test_candidates_v2_channel_a_parity"]),
+    ("A8 candidates_v2 → Channel A → V5 50K anchor (all L, mm_geometry, is_split)",
+     [sys.executable, "-m", "scripts.generator_v5.tests.test_candidates_v2_channel_a_v5_anchor"]),
 ]
 
 

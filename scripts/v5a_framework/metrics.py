@@ -412,3 +412,58 @@ def decision_gate_from_reports_paired(
         return {"locked": False,
                 "reason": f"gate requires reports.dataset == {dataset_expected!r}"}
     return paired_decision_gate(m_fp_by_tnp, e_fp_by_tnp, **gate_kwargs)
+
+
+# ---------- non-degeneracy stratification assert ----------
+
+class DegenerateStratumError(AssertionError):
+    """A stratum's numeric metrics are ALL degenerate (0.0 or 1.0) despite
+    having enough samples that at least one nontrivial value is expected.
+
+    Almost always a signature of a naming/mapping bug where the stratum
+    labeled X was silently filtered to an empty set. History: V5 arch.orient
+    ∈ {'fwd','rev'} vs preprocess pool ∈ {'fwd','rc'} — the 'rev' stratum
+    produced (strict, L_full, subL, any_L) = (0, 0, 0, 0) in the first pool-
+    recovery pass, and only a per-orient comparison caught it.
+    """
+
+
+def assert_non_degenerate_stratification(
+    stratified: Mapping[str, Mapping[str, float]],
+    metric_names: tuple[str, ...],
+    min_n: int = 50,
+    n_key: str = "n_tnps",
+    axis_name: str = "<axis>",
+) -> None:
+    """Assert that every stratum with at least `min_n` samples has NOT ALL of
+    `metric_names` exactly equal to 0.0 or NOT ALL exactly 1.0.
+
+    `stratified` is a dict of stratum_label → dict-of-metric-name → float.
+    Examples of misuse this catches:
+      - A rename disconnect: the strat label wasn't found in a downstream
+        map, so the filter emptied the stratum silently.
+      - A one-sided admission rule that never fires: coverage = PPV = exact
+        = 0 across every metric while n_tnps > 0.
+
+    Not a substitute for `assert_same_rule` — this checks a distinct failure
+    mode. Cheap to run alongside stratifiers.
+
+    Raises DegenerateStratumError with the offending stratum's row.
+    """
+    for stratum, row in stratified.items():
+        n = int(row.get(n_key, 0))
+        if n < min_n:
+            continue
+        vals = [float(row.get(m, float("nan"))) for m in metric_names]
+        if all(v == 0.0 for v in vals):
+            raise DegenerateStratumError(
+                f"{axis_name}={stratum!r} (n={n} >= {min_n}) has ALL of "
+                f"{list(metric_names)} == 0.0 — likely a naming or mapping "
+                f"bug that silently emptied this stratum. Row: {dict(row)}"
+            )
+        if all(v == 1.0 for v in vals):
+            raise DegenerateStratumError(
+                f"{axis_name}={stratum!r} (n={n} >= {min_n}) has ALL of "
+                f"{list(metric_names)} == 1.0 — improbable perfection; check "
+                f"for a tautology or a swapped comparison. Row: {dict(row)}"
+            )

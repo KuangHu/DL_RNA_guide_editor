@@ -108,7 +108,7 @@ def main() -> int:
                 "n_positions":    b.difficulty.nc_len - b.difficulty.L + 1,
                 # Test 1's competitor_count: positions with m_max >= this
                 # site's planted_m (NOT the fixed m=8 downstream threshold).
-                "competitor_count": s.competitor_count_at_planted_m,
+                "competitor_count": s.competitor_count_at_site_planted_m,
                 "m_at_planted":   s.m_at_planted,
                 "planted_start_pct": b.planted_start_on_nc / max(b.difficulty.nc_len - b.difficulty.L, 1),
             })

@@ -49,10 +49,42 @@ def _worker_init():
 
 
 def _worker_build_bag(args):
-    """Build ONE bag in a worker. args = (idx, seed, include_channels)."""
-    idx, seed, include_channels = args
+    """Build ONE bag in a worker. args tuple length grows with each new
+    axis; oldest tuple shapes still accepted for callers that predate."""
+    accessibility_target_percentile = None
+    gc_target = None
+    if len(args) == 3:
+        idx, seed, include_channels = args
+        negative_mode = "none"; nc_homology_rate = None
+        flank_offset_mode = None; n_sites_override = None
+    elif len(args) == 4:
+        idx, seed, include_channels, negative_mode = args
+        nc_homology_rate = None; flank_offset_mode = None; n_sites_override = None
+    elif len(args) == 5:
+        idx, seed, include_channels, negative_mode, nc_homology_rate = args
+        flank_offset_mode = None; n_sites_override = None
+    elif len(args) == 6:
+        idx, seed, include_channels, negative_mode, nc_homology_rate, flank_offset_mode = args
+        n_sites_override = None
+    elif len(args) == 7:
+        (idx, seed, include_channels, negative_mode, nc_homology_rate,
+         flank_offset_mode, n_sites_override) = args
+    elif len(args) == 8:
+        (idx, seed, include_channels, negative_mode, nc_homology_rate,
+         flank_offset_mode, n_sites_override,
+         accessibility_target_percentile) = args
+    else:
+        (idx, seed, include_channels, negative_mode, nc_homology_rate,
+         flank_offset_mode, n_sites_override,
+         accessibility_target_percentile, gc_target) = args
     rng = random.Random(seed)
-    b = build_bag(f"bag_{idx:06d}", rng, _WORKER_FL, _WORKER_TBL)
+    b = build_bag(f"bag_{idx:06d}", rng, _WORKER_FL, _WORKER_TBL,
+                    n_sites=n_sites_override,
+                    negative_mode=negative_mode,
+                    nc_homology_rate=nc_homology_rate,
+                    flank_offset_mode=flank_offset_mode,
+                    accessibility_target_percentile=accessibility_target_percentile,
+                    gc_target=gc_target)
     if b is None:
         return None
     summary = summarize_bag(b)
@@ -108,7 +140,7 @@ def summarize_bag(b: Bag) -> dict:
         site_summary.append({
             "site_idx":         s.site_idx,
             "m_at_planted":     s.m_at_planted,
-            "competitor_count": s.competitor_count_at_planted_m,
+            "competitor_count": s.competitor_count_at_site_planted_m,
         })
 
     return {
@@ -123,6 +155,7 @@ def summarize_bag(b: Bag) -> dict:
         "n_nc":           b.architecture.n_nc,
         "n_positions":    b.difficulty.nc_len - L + 1,
         "guide_pct":      guide_pct,
+        "accessibility_target_percentile": b.architecture.accessibility_target_percentile,
         "has_5p_sl_active": b.has_5p_stem_loop_per_nc[active_idx],
         "nc_summary":     per_nc_summary,
         "site_summary":   site_summary,
@@ -221,13 +254,48 @@ def acceptance_report(bag_stats: list[dict]) -> dict:
                           rate[mask_L], planted_m[mask_L], target_m[mask_L],
                           int(mask_L.sum()), is_pool=False))
 
-    # Test 3
+    # Test 3 — guide-placement percentile marginal distribution.
+    #
+    # Pre-1e: μ was fixed at 0.85, so the marginal was concentrated
+    # near 0.85 (median ∈ [0.80, 0.90], IQR ≥ 0.10). Under Stage 1e
+    # accessibility_target_percentile ∼ U[0.4, 0.95], the marginal is
+    # a mixture and the pre-1e median band is no longer meaningful.
+    # Judge instead: does the observed empirical percentile match its
+    # declared per-bag axis?
+    #
+    # We report BOTH: (a) the pre-1e median/IQR fields for pre-1e
+    # corpora that haven't turned the axis on, and (b) a KS test of the
+    # observed percentiles against the U[0.4, 0.95] marginal expected
+    # under the axis. When arch.accessibility_target_percentile is
+    # constant across bags (pinned run), the KS test is degenerate;
+    # only the median-band check applies then.
     percentiles = np.array([b["guide_pct"] for b in bag_stats])
     med = float(np.median(percentiles)); iqr = float(np.percentile(percentiles, 75) - np.percentile(percentiles, 25))
+    from scipy.stats import kstest, uniform
+    # Are the per-bag μ values varying? If not, this is a pinned run.
+    mu_vals = [b.get("accessibility_target_percentile", 0.85) for b in bag_stats]
+    axis_active = len(set(round(v, 6) for v in mu_vals)) > 1
+    ks_stat = ks_p = None
+    if axis_active:
+        # Under Stage 1e the marginal of the OBSERVED placement is
+        # NOT identically U[0.4, 0.95]. It's a mixture: for each bag,
+        # placement centered on μ_i with the sampler's σ. But at the
+        # bag level the DECLARED μ ~ U[0.4, 0.95], so we KS-test the
+        # DECLARED μ values (from arch metadata) against U[0.4, 0.95].
+        # This proves the AXIS is uniform; the σ-smearing at placement
+        # time is a separate acceptance item.
+        mu_arr = np.array(mu_vals)
+        ks_stat, ks_p = kstest(mu_arr, "uniform", args=(0.4, 0.95 - 0.4))
+        ks_stat = float(ks_stat); ks_p = float(ks_p)
     report["test3"] = {
-        "median_pct": med, "iqr": iqr,
-        "pass_median": TEST3_MED_LO <= med <= TEST3_MED_HI,
-        "pass_iqr": iqr >= TEST3_IQR_MIN,
+        "median_pct":     med,
+        "iqr":            iqr,
+        "pass_median":    (TEST3_MED_LO <= med <= TEST3_MED_HI) if not axis_active else True,
+        "pass_iqr":       (iqr >= TEST3_IQR_MIN) if not axis_active else True,
+        "axis_active":    axis_active,
+        "ks_stat":        ks_stat,
+        "ks_p":           ks_p,
+        "pass_ks":        (ks_p >= 0.01) if axis_active and ks_p is not None else True,
     }
 
     # Split vs contig
@@ -284,8 +352,17 @@ def print_report(report: dict) -> None:
         _print_sub(r)
     print("\n=== Test 3 ===")
     t3 = report["test3"]
-    print(f"  median %ile = {t3['median_pct']:.3f}  ({'PASS' if t3['pass_median'] else 'FAIL'})")
-    print(f"  IQR         = {t3['iqr']:.3f}         ({'PASS' if t3['pass_iqr'] else 'FAIL'})")
+    if t3.get("axis_active"):
+        print(f"  accessibility axis ACTIVE (mu ~ U[0.4, 0.95])")
+        print(f"  KS test on declared mu vs U[0.4, 0.95]:")
+        print(f"    stat={t3['ks_stat']:.4f}  p={t3['ks_p']:.4f}  "
+              f"({'PASS' if t3['pass_ks'] else 'FAIL'})")
+        print(f"  observed placement percentile median={t3['median_pct']:.3f} "
+              f"(informational; pre-1e band retired)")
+    else:
+        print(f"  accessibility axis PINNED (mu fixed)")
+        print(f"  median %ile = {t3['median_pct']:.3f}  ({'PASS' if t3['pass_median'] else 'FAIL'})")
+        print(f"  IQR         = {t3['iqr']:.3f}         ({'PASS' if t3['pass_iqr'] else 'FAIL'})")
     print("\n=== Split vs contig ===")
     for label, s in report["split_vs_contig"].items():
         print(f"  {label:<11s} n={s['n']:>6d}  median_m={s['median_m']:.1f}  P(m>=6)={s['P_m_ge_6']:.4f}")
@@ -332,6 +409,12 @@ def _emit_manifest(path: str, args: argparse.Namespace,
                      tbl_path: str, n_bags_produced: int,
                      seconds: float) -> None:
     repo_root = Path(__file__).resolve().parents[2]
+    # Biopython version (best-effort; alignment tool is Bio.Align.PairwiseAligner)
+    try:
+        import Bio
+        bio_version = getattr(Bio, "__version__", "unknown")
+    except Exception:
+        bio_version = "unavailable"
     manifest = {
         "generator_version":    "v5",
         "git_commit":           _git_commit(repo_root),
@@ -347,6 +430,15 @@ def _emit_manifest(path: str, args: argparse.Namespace,
         "output_jsonl":         args.out,
         "stats_out":            args.stats_out,
         "include_structure_channels": args.include_channels,
+        "nc_homology_rate_override": args.nc_homology_rate,
+        "flank_offset_mode_override": args.flank_offset_mode,
+        "n_sites_override": args.n_sites,
+        "accessibility_target_percentile_override": args.accessibility_target_percentile,
+        "gc_target_override": args.gc_target,
+        "alignment_tool":        "Bio.Align.PairwiseAligner",
+        "alignment_tool_version": bio_version,
+        "alignment_params":      {"mode": "global", "match": 2, "mismatch": -1,
+                                    "open_gap": -2, "extend_gap": -1},
     }
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -371,6 +463,38 @@ def main() -> int:
                      help="Include per-nc structure channels + mask in JSONL")
     ap.add_argument("--rate-table-path", type=str,
                      default="/global/scratch/users/kh36969/DL_novel_guide_editor/v5_gen/rate_table.json")
+    ap.add_argument("--negative-mode", type=str, default="none",
+                     choices=("none", "scattered", "partial", "twin"),
+                     help="none = positive; scattered = per-site nc_start hard "
+                          "negative; partial = 1..n_sites-1 sites planted hard "
+                          "negative; twin = per-site nc_start with accessibility"
+                          "-matched percentile (Stage 1d).")
+    ap.add_argument("--nc-homology-rate", type=float, default=None,
+                     help="Override the per-bag nc_homology_rate axis to a fixed "
+                          "value in [0.5, 1.0]. 1.0 = identity (A8a anchor); "
+                          "None = sample uniformly from DEFAULT_NC_HOMOLOGY_RATES.")
+    ap.add_argument("--flank-offset-mode", type=str, default=None,
+                     choices=("consistent", "inconsistent"),
+                     help="Override the per-bag flank_offset_mode axis. "
+                          "'inconsistent' pins to the pre-2026-09-02 behavior "
+                          "so RNG state matches the 50K constrained anchor "
+                          "(0.4864/0.9681/0.4356). None = sample uniformly.")
+    ap.add_argument("--n-sites", type=int, default=None,
+                     help="Override the per-bag n_sites axis to a fixed int. "
+                          "Use 5 to keep A8a byte-identity (n_sites was pinned "
+                          "at 5 pre-1c). None = sample uniformly from "
+                          "DEFAULT_N_SITES_RANGE.")
+    ap.add_argument("--accessibility-target-percentile", type=float, default=None,
+                     help="Override the per-bag accessibility_target_percentile "
+                          "axis to a fixed float. Use 0.85 to keep A8a byte-"
+                          "identity (μ was fixed at 0.85 pre-1e). None = "
+                          "sample uniformly from DEFAULT_ACCESSIBILITY_TARGETS.")
+    ap.add_argument("--gc-target", type=float, default=None,
+                     help="Override the per-bag gc_target axis to a fixed "
+                          "float. Use 0.5 to keep A8a byte-identity (uniform "
+                          "ACGT pre-1f; rng.choices at equal weights is "
+                          "byte-identical to unweighted). None = sample "
+                          "uniformly from DEFAULT_GC_TARGET_RANGE.")
     args = ap.parse_args()
 
     print(f"[gen] preflight: rate table + flank pool")
@@ -386,7 +510,10 @@ def main() -> int:
     # Per-bag seeds derived from the master seed to keep worker RNG independent.
     master_rng = random.Random(args.seed)
     per_bag_seeds = [master_rng.randrange(0, 2**31 - 1) for _ in range(args.n_bags)]
-    tasks = [(i, per_bag_seeds[i], args.include_channels) for i in range(args.n_bags)]
+    tasks = [(i, per_bag_seeds[i], args.include_channels, args.negative_mode,
+                args.nc_homology_rate, args.flank_offset_mode, args.n_sites,
+                args.accessibility_target_percentile, args.gc_target)
+             for i in range(args.n_bags)]
 
     bag_stats: list[dict] = []
     t0 = time.perf_counter()

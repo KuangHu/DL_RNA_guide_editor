@@ -114,6 +114,136 @@ def sample_guide_placement(
     )
 
 
+MATCH_CHANNELS_ALL: tuple[str, ...] = (
+    "p_ss", "cooperativity_win_pn", "H_pair_win",
+    "dG_open_uL_pn", "E_span_win",
+)
+
+# Stage 1d default match set. Item 4.5 measured per-channel P(gold better):
+#   cooperativity 0.909  <-- most discriminative
+#   dG_open_uL   0.853
+#   H_pair       0.834
+#   p_ss         0.781
+#   E_span       0.630
+# Matching only p_ss (0.781) leaves the strongest channel (cooperativity)
+# free — the twin's provable-0.5 claim degrades to empirical, and A12 is
+# likely to fail. Default match set uses the top-2 (cooperativity + p_ss)
+# so twin sites are matched on the most discriminative channel by
+# construction; A12 remains meaningful for the remaining 3 free channels.
+MATCH_CHANNELS_DEFAULT: tuple[str, ...] = (
+    "p_ss", "cooperativity_win_pn",
+)
+
+
+def _channel_percentiles(feats: StructureFeaturesV2, L: int,
+                            channel: str) -> np.ndarray:
+    """Return per-window-start empirical rank/(n_win-1) for the given
+    channel. `p_ss` uses the cumsum window mean; others use direct
+    per-window arrays where available."""
+    if channel == "p_ss":
+        p_ss = feats.p_ss
+        n_win = len(p_ss) - L + 1
+        if n_win <= 0:
+            return np.zeros(0)
+        csum = np.concatenate(([0.0], np.cumsum(p_ss, dtype=np.float64)))
+        vals = (csum[L:] - csum[:-L]) / L
+    else:
+        arr = getattr(feats, channel, None)
+        if arr is None:
+            return np.zeros(0)
+        vals = np.asarray(arr, dtype=np.float64)
+        # Windowed channels already have shape (n_win,); non-windowed
+        # (per-position) fall back to a sliding mean.
+        exp_len = len(feats.p_ss) - L + 1
+        if vals.shape[0] != exp_len:
+            csum = np.concatenate(([0.0], np.cumsum(vals, dtype=np.float64)))
+            if csum.size < L + 1:
+                return np.zeros(0)
+            vals = (csum[L:] - csum[:-L]) / L
+        vals = np.where(np.isnan(vals), np.nanmedian(vals), vals)
+    n_win = vals.size
+    order = np.argsort(vals, kind="stable")
+    ranks = np.empty(n_win, dtype=np.float64)
+    ranks[order] = np.arange(n_win)
+    return ranks / max(n_win - 1, 1)
+
+
+def sample_percentile_matched_positions(
+    feats: StructureFeaturesV2,
+    target_percentile: float,
+    n_distinct: int,
+    exclude: set[int] | None = None,
+    tol: float = 0.05,
+    rng: random.Random | np.random.Generator | None = None,
+    match_channels: tuple[str, ...] = ("p_ss",),
+    per_channel_targets: dict[str, float] | None = None,
+) -> list[int] | None:
+    """1d twin-negative helper (added 2026-09-03).
+
+    Return `n_distinct` DIFFERENT guide-start positions whose empirical
+    percentile on EVERY channel in `match_channels` is within `tol` of
+    that channel's target percentile, and that avoid every position in
+    `exclude` (typically {p_true}).
+
+    `per_channel_targets`: optional per-channel target percentiles. When
+    None, `target_percentile` is used for every channel (backwards compat
+    with the p_ss-only default). For a true twin negative, the caller
+    passes the positive's actual per-channel percentiles here so all
+    structure-derived features match.
+
+    match_channels tuple selects which structure channels' percentile
+    ranks the twin positions must match:
+        ("p_ss",)                  = p_ss-only (default; loose)
+        MATCH_CHANNELS_ALL         = all 5 channels (tight; may require
+                                     widening tol or lowering n_distinct)
+
+    NOTE — the "provably 0.5 structure-only AUROC" claim in the handoff
+    spec is exact ONLY when the FULL structure channel vector is
+    matched. Item 4.5 measured per-channel discriminative power
+    (cooperativity 0.909, dG_open_uL 0.853, H_pair 0.834, p_ss 0.781,
+    E_span 0.630). Matching p_ss alone leaves the other four channels
+    free — the 0.5 claim degrades to empirical, tested by A12.
+
+    Returns None if the intersection has fewer than `n_distinct`
+    candidates. Caller must widen `tol`, drop a channel, or accept
+    fewer twins.
+    """
+    if rng is None:
+        rng = random.Random()
+
+    L = feats.guide_length
+    n_win = len(feats.p_ss) - L + 1
+    if n_win <= 0:
+        return None
+
+    targets = dict(per_channel_targets or {})
+    for ch in match_channels:
+        targets.setdefault(ch, target_percentile)
+
+    mask = np.ones(n_win, dtype=bool)
+    for ch in match_channels:
+        pct = _channel_percentiles(feats, L, ch)
+        if pct.size != n_win:
+            continue        # channel unavailable — skip silently
+        t = targets[ch]
+        mask &= (pct >= t - tol) & (pct <= t + tol)
+    if exclude:
+        for p in exclude:
+            if 0 <= p < n_win:
+                mask[p] = False
+    candidates = np.where(mask)[0]
+    if candidates.size < n_distinct:
+        return None
+
+    if isinstance(rng, random.Random):
+        pool = list(int(c) for c in candidates)
+        rng.shuffle(pool)
+        return sorted(pool[:n_distinct])
+    else:
+        chosen = rng.choice(candidates, size=n_distinct, replace=False)
+        return sorted(int(c) for c in chosen)
+
+
 def sample_random_ncrna_and_placement(
     nc_length: int,
     guide_length: int,

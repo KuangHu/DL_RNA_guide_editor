@@ -53,6 +53,27 @@ class MetricCondition:
     flank_source:          str   # "durrant_self" | "durrant_shuffled" | "IS10-R" | ... — the 7-way negative axis
     flank_grouping:        str   # "same_tnp_random5" | "same_tnp_exactly5" | "cross_tnp_random5"
 
+    # 2026-09-02 addition — candidate-layer emission-mode dimension.
+    # Recurrence family: v2 candidate layer emits TWO views of the same
+    # underlying computation — dense position arrays (for cross-site
+    # aggregation) and a dedup'd candidate list (for tensor-attach features).
+    # Anchor-only cross-site queries on the list give L=11 Channel A
+    # coverage 0.10; the same query on position arrays gives 0.65 (500-bag
+    # sample). Comparing a metric measured on one emission to a metric
+    # measured on the other confounds emission mode with the axis the
+    # comparison is nominally about. safe_ratio must refuse the compare.
+    #
+    # Values:
+    #   "position_array"   — dense m_max[nc_start, orient, L]; MatchTable-equivalent
+    #   "candidate_list_anchor"  — anchor-only lookup on the deduplicated CandidateV2 list
+    #   "candidate_list_span"    — span-coverage lookup on the deduplicated list
+    #   "not_applicable"   — for computations that do not consume candidates
+    #                       (e.g. mm_geometry axis of the generator itself)
+    # Defaults to "not_applicable" so pre-2026-09-02 call sites keep passing;
+    # any candidate-layer-driven comparison from now on MUST specify this
+    # explicitly, because safe_ratio refuses ratios that span emission modes.
+    emission_mode:         str = "not_applicable"
+
     def diff(self, other: "MetricCondition") -> list[str]:
         return [f.name for f in fields(self)
                     if getattr(self, f.name) != getattr(other, f.name)]

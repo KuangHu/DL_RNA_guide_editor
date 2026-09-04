@@ -85,6 +85,14 @@ class SiteRecord:
     For negatives: flank is the DOWNSTREAM 120 nt flank (junction at position 0);
       upstream_flank is the paired UPSTREAM 120 nt (junction at the last position);
       target_flank_start is None (no known guide target).
+
+    v6 fields (2026-09-03; optional for backward compat with pre-v6 shards):
+      site_nc: the site-specific mutated active-slot nc. Under homology=1.0
+        or in a legacy shard this is None and `tnp.nc` (canonical) is used.
+      site_to_canonical_map: entry k = canonical pos aligned to site pos k,
+        or -1 if the site pos is an inserted base. Length == len(site_nc).
+        Consumed by _compute_site_arrays to project (site_nc, flank) m_max
+        into canonical coordinates (position axis == canonical).
     """
     site_idx: int
     flank: str
@@ -92,6 +100,8 @@ class SiteRecord:
     target_flank_start: int | None
     gold_nc: int | None
     gold_L: int | None
+    site_nc: str | None = None
+    site_to_canonical_map: list[int] | None = None
 
 
 @dataclass
@@ -104,18 +114,33 @@ class TnpRecord:
 
 @dataclass
 class MatchArrays:
-    """Per-position m_max, indexed by junction-exclusion width.
+    """Per-position m_max + flank_argmax, indexed by junction-exclusion width.
 
-    m_max_by_excl[w][p] = max over flank offsets f in [w, W-L+1) of m_max
-                          for the L-window at nc position p.
+    m_max_by_excl[w][p]        = max over flank offsets f in [w, W-L+1) of m
+                                  for the L-window at nc position p.
+    flank_argmax_by_excl[w][p] = the flank offset f that achieved the max
+                                  at nc position p (int16; -1 when no
+                                  offset qualifies, e.g., w >= W-L+1).
+
     w=0 means "no exclusion" — identical to the original m_max.
+
+    Stage 1h (2026-09-03): flank_argmax_by_excl added to enable
+    VariantSpec.flank_coherence detection. Backward compat: shards
+    written pre-1h don't have argmax keys; loaders skip the field
+    (flank_coherence must remain "off" for those tables).
     """
-    m_max_by_excl: dict[int, np.ndarray]   # {w: int8[n_nc_positions]}
+    m_max_by_excl: dict[int, np.ndarray]      # {w: int8[n_nc_positions]}
+    flank_argmax_by_excl: dict[int, np.ndarray] = field(default_factory=dict)  # {w: int16[n_nc_positions]}
 
     @property
     def m_max(self) -> np.ndarray:
         """Backward-compat alias: m_max_by_excl[0]."""
         return self.m_max_by_excl[0]
+
+    @property
+    def flank_argmax(self) -> np.ndarray | None:
+        """Backward-compat accessor for the excl_w=0 flank_argmax."""
+        return self.flank_argmax_by_excl.get(0)
 
 
 @dataclass
@@ -145,18 +170,26 @@ class MatchTable:
     def _load_shard(self, tnp_id: str) -> None:
         path = self.shard_dir / f"{_safe_name(tnp_id)}.npz"
         z = np.load(path)
-        by_key: dict[tuple[int, Orient, int], dict[int, np.ndarray]] = {}
+        by_m: dict[tuple[int, Orient, int], dict[int, np.ndarray]] = {}
+        by_a: dict[tuple[int, Orient, int], dict[int, np.ndarray]] = {}
         for k in z.files:
-            # keys are like "3|fwd|11|excl9"
             parts = k.split("|")
-            if len(parts) != 4 or not parts[3].startswith("excl"):
+            if len(parts) != 4:
                 continue
             s_idx = int(parts[0]); orient = parts[1]; L = int(parts[2])
-            w = int(parts[3][4:])
-            by_key.setdefault((s_idx, orient, L), {})[w] = z[k]
+            tag = parts[3]
+            if tag.startswith("excl"):
+                w = int(tag[4:])
+                by_m.setdefault((s_idx, orient, L), {})[w] = z[k]
+            elif tag.startswith("argmax"):
+                w = int(tag[len("argmax"):])
+                by_a.setdefault((s_idx, orient, L), {})[w] = z[k]
         d: dict[tuple[int, Orient, int], MatchArrays] = {}
-        for key, w_dict in by_key.items():
-            d[key] = MatchArrays(m_max_by_excl=w_dict)
+        for key, w_dict in by_m.items():
+            d[key] = MatchArrays(
+                m_max_by_excl=w_dict,
+                flank_argmax_by_excl=by_a.get(key, {}),
+            )
         self._cache[tnp_id] = d
 
     def evict(self, tnp_id: str) -> None:
@@ -219,6 +252,36 @@ def _windowed_max_by_excl(win: np.ndarray, excl_widths: tuple[int, ...]
     return out
 
 
+def _windowed_max_and_argmax_by_excl(win: np.ndarray,
+                                          excl_widths: tuple[int, ...]
+                                          ) -> tuple[dict[int, np.ndarray],
+                                                     dict[int, np.ndarray]]:
+    """Stage 1h: max + argmax over the same window slices.
+    Returns (m_max_by_excl, flank_argmax_by_excl).
+
+    flank_argmax value at nc position p, exclusion w, is the flank
+    offset f (absolute — includes the w prefix that was excluded) that
+    achieves the max. -1 sentinel when no offset qualifies (empty
+    slice or w >= n_offsets). int16 dtype covers flanks up to 32k."""
+    m_out: dict[int, np.ndarray] = {}
+    a_out: dict[int, np.ndarray] = {}
+    if win.size == 0:
+        for w in excl_widths:
+            m_out[w] = np.zeros(0, dtype=np.int8)
+            a_out[w] = np.zeros(0, dtype=np.int16)
+        return m_out, a_out
+    n_pos, n_offsets = win.shape
+    for w in excl_widths:
+        if w >= n_offsets:
+            m_out[w] = np.zeros(n_pos, dtype=np.int8)
+            a_out[w] = np.full(n_pos, -1, dtype=np.int16)
+        else:
+            sub = win[:, w:]
+            m_out[w] = sub.max(axis=1).astype(np.int8)
+            a_out[w] = (w + sub.argmax(axis=1)).astype(np.int16)
+    return m_out, a_out
+
+
 def _fwd_win_max_by_excl(nc: str, flank: str, L: int,
                           excl_widths: tuple[int, ...]) -> dict[int, np.ndarray]:
     fwd, _ = dot_plot(nc, flank)
@@ -233,18 +296,102 @@ def _rc_win_max_by_excl(nc: str, flank: str, L: int,
     return _windowed_max_by_excl(win, excl_widths)
 
 
+def _fwd_win_m_and_argmax_by_excl(nc: str, flank: str, L: int,
+                                       excl_widths: tuple[int, ...]):
+    """1h: fwd orientation m + flank_argmax."""
+    fwd, _ = dot_plot(nc, flank)
+    win = windowed_matches(fwd, L)
+    return _windowed_max_and_argmax_by_excl(win, excl_widths)
+
+
+def _rc_win_m_and_argmax_by_excl(nc: str, flank: str, L: int,
+                                      excl_widths: tuple[int, ...]):
+    """1h: rc orientation m + flank_argmax."""
+    _, rc = dot_plot(nc, flank)
+    win = windowed_matches(rc, L)
+    return _windowed_max_and_argmax_by_excl(win, excl_widths)
+
+
 def _compute_site_arrays(
     nc: str, flank: str, orients: tuple[Orient, ...], Ls: tuple[int, ...],
     excl_widths: tuple[int, ...] = EXCL_WIDTHS,
 ) -> dict[tuple[Orient, int], MatchArrays]:
+    """Stage 1h: compute both m_max and flank_argmax in one pass."""
     out: dict[tuple[Orient, int], MatchArrays] = {}
     for orient in orients:
         for L in Ls:
             if orient == "fwd":
-                m_dict = _fwd_win_max_by_excl(nc, flank, L, excl_widths)
+                m_dict, a_dict = _fwd_win_m_and_argmax_by_excl(nc, flank, L, excl_widths)
             else:
-                m_dict = _rc_win_max_by_excl(nc, flank, L, excl_widths)
-            out[(orient, L)] = MatchArrays(m_max_by_excl=m_dict)
+                m_dict, a_dict = _rc_win_m_and_argmax_by_excl(nc, flank, L, excl_widths)
+            out[(orient, L)] = MatchArrays(
+                m_max_by_excl=m_dict,
+                flank_argmax_by_excl=a_dict,
+            )
+    return out
+
+
+def _invert_site_to_canonical(s2c_map: list[int], canonical_len: int
+                                  ) -> np.ndarray:
+    """Return canonical→site inverse: entry k = site pos that aligned to
+    canonical pos k, or -1 if no site position mapped there. When multiple
+    site positions map to one canonical pos (rare; would signal alignment
+    error), the smallest site position wins."""
+    inv = np.full(canonical_len, -1, dtype=np.int32)
+    for site_p, can_p in enumerate(s2c_map):
+        if 0 <= can_p < canonical_len and inv[can_p] == -1:
+            inv[can_p] = site_p
+    return inv
+
+
+def _project_to_canonical(
+    site_arrays: dict[tuple[Orient, int], MatchArrays],
+    s2c_map: list[int], canonical_len: int,
+    Ls: tuple[int, ...],
+) -> dict[tuple[Orient, int], MatchArrays]:
+    """Reindex per-orient/per-L m_max AND flank_argmax arrays from
+    site-nc coordinates to canonical coordinates via the site→canonical
+    alignment map.
+
+    For each L: canonical windows have length canonical_len - L + 1.
+    Value at canonical pos p_can is the site array's value at
+    can_to_site[p_can] (clipped to the site array's bounds), or the
+    default (0 for m_max, -1 for flank_argmax) when unmapped.
+
+    Stage 1h note: flank_argmax VALUES are flank-side coordinates —
+    they are NOT transformed by the nc-side alignment map. Only the
+    INDEXING (which nc position holds each entry) is projected. It is
+    tempting to also map argmax values through some flank map; that
+    would be wrong because there is no per-nc-position flank alignment.
+    """
+    can_to_site = _invert_site_to_canonical(s2c_map, canonical_len)
+    out: dict[tuple[Orient, int], MatchArrays] = {}
+    for (orient, L), ma in site_arrays.items():
+        n_can_pos = max(0, canonical_len - L + 1)
+        new_by_excl: dict[int, np.ndarray] = {}
+        new_argmax_by_excl: dict[int, np.ndarray] = {}
+        for w, arr_site in ma.m_max_by_excl.items():
+            proj = np.zeros(n_can_pos, dtype=np.int8)
+            n_site_pos = arr_site.shape[0]
+            if n_site_pos > 0 and n_can_pos > 0:
+                idx = can_to_site[:n_can_pos]
+                valid = (idx >= 0) & (idx < n_site_pos)
+                if valid.any():
+                    proj[valid] = arr_site[idx[valid]]
+            new_by_excl[w] = proj
+        for w, arr_site in ma.flank_argmax_by_excl.items():
+            proj_a = np.full(n_can_pos, -1, dtype=np.int16)
+            n_site_pos = arr_site.shape[0]
+            if n_site_pos > 0 and n_can_pos > 0:
+                idx = can_to_site[:n_can_pos]
+                valid = (idx >= 0) & (idx < n_site_pos)
+                if valid.any():
+                    proj_a[valid] = arr_site[idx[valid]]
+            new_argmax_by_excl[w] = proj_a
+        out[(orient, L)] = MatchArrays(
+            m_max_by_excl=new_by_excl,
+            flank_argmax_by_excl=new_argmax_by_excl,
+        )
     return out
 
 
@@ -252,19 +399,45 @@ def _write_shard(shard_dir: Path, tnp: TnpRecord,
                  orients: tuple[Orient, ...], Ls: tuple[int, ...],
                  excl_widths: tuple[int, ...] = EXCL_WIDTHS) -> None:
     arrays: dict[str, np.ndarray] = {}
+    canonical_len = len(tnp.nc)
     for s in tnp.sites:
-        site_arrs = _compute_site_arrays(tnp.nc, s.flank, orients, Ls, excl_widths)
+        # v6: when site_nc + s2c_map are attached, compute m_max on the
+        # site's ACTUAL nc against its flank, then project to canonical
+        # coordinates. When absent (pre-v6 or homology=1.0 without a map
+        # emitted), fall back to computing directly on tnp.nc (canonical).
+        if s.site_nc is not None and s.site_to_canonical_map is not None:
+            site_arrs = _compute_site_arrays(
+                s.site_nc, s.flank, orients, Ls, excl_widths)
+            site_arrs = _project_to_canonical(
+                site_arrs, s.site_to_canonical_map, canonical_len, Ls)
+        else:
+            site_arrs = _compute_site_arrays(
+                tnp.nc, s.flank, orients, Ls, excl_widths)
         for (orient, L), ma in site_arrs.items():
             for w, arr in ma.m_max_by_excl.items():
                 arrays[f"{s.site_idx}|{orient}|{L}|excl{w}"] = arr
+            # Stage 1h: write flank_argmax ONLY at excl_w=0 (2026-09-03).
+            # Storage economy — full-width store took 1.1GB vs pre-1h 456MB
+            # for a 5K corpus (+140%). Only excl_w=0 has a downstream
+            # consumer (VariantSpec.flank_coherence), and adding storage
+            # for widths nobody reads made 50K-corpus Stage 2 storage
+            # untenable. Trimmed store: ~+40% over pre-1h.
+            if 0 in ma.flank_argmax_by_excl:
+                arrays[f"{s.site_idx}|{orient}|{L}|argmax0"] = (
+                    ma.flank_argmax_by_excl[0])
     np.savez(shard_dir / f"{_safe_name(tnp.tnp_id)}.npz", **arrays)
 
 
 def _serialize_site(s: SiteRecord) -> dict:
-    return {"site_idx": s.site_idx, "flank": s.flank,
-            "upstream_flank": s.upstream_flank,
-            "target_flank_start": s.target_flank_start,
-            "gold_nc": s.gold_nc, "gold_L": s.gold_L}
+    out = {"site_idx": s.site_idx, "flank": s.flank,
+             "upstream_flank": s.upstream_flank,
+             "target_flank_start": s.target_flank_start,
+             "gold_nc": s.gold_nc, "gold_L": s.gold_L}
+    if s.site_nc is not None:
+        out["site_nc"] = s.site_nc
+    if s.site_to_canonical_map is not None:
+        out["site_to_canonical_map"] = list(s.site_to_canonical_map)
+    return out
 
 
 def _deserialize_site(d: dict) -> SiteRecord:
@@ -273,6 +446,8 @@ def _deserialize_site(d: dict) -> SiteRecord:
         upstream_flank=d.get("upstream_flank"),
         target_flank_start=d.get("target_flank_start"),
         gold_nc=d.get("gold_nc"), gold_L=d.get("gold_L"),
+        site_nc=d.get("site_nc"),
+        site_to_canonical_map=d.get("site_to_canonical_map"),
     )
 
 

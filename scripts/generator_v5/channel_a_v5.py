@@ -10,7 +10,7 @@ Reports:
   per-L stratified (11, 12, 13, 14)
   per-arch axis stratified:
     is_split (False/True)
-    orient (fwd/rev)
+    orient (fwd/rc — pre-2026-09-01 batches used 'rev' for 'rc'; both accepted here)
     N_nc (1/2/3)
     tsd_width (0/2/5/8/9/12)
     tsd_relation (none/before/after/both_sides)
@@ -161,11 +161,14 @@ def _parallel_build(records: list[TnpRecord], shard_dir: Path,
 def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
                         orients: tuple = ORIENTS,
                         Ls: tuple = DEFAULT_LS,
-                        min_sites: int = 5,
-                        cap_sites: int = 5,
+                        min_sites: int = 3,
+                        cap_sites: int = 8,
                         family_label: str = "v5_positive",
                         workers: int = 1,
                         ) -> tuple[MatchTable, dict]:
+    """Stage 1c: min_sites/cap_sites default to [3, 8] to accommodate
+    the n_sites axis (uniform on DEFAULT_N_SITES_RANGE). Pre-1c corpora
+    with fixed n_sites=5 pass through unchanged."""
     """Build MatchTable from V5 positives JSONL.
 
     Returns (mt, arch_by_tnp). arch_by_tnp[tnp_id] holds the per-bag
@@ -185,17 +188,33 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
             # holds the same per-Tnp arrays either way; downstream analysis
             # decides whether coverage means PPV_denom (positives) or FP rate
             # (negatives) based on the sentinel gold_nc value.
-            pass
             tnp = r["transposase_id"]
             a = r["labels"].get("active_noncoding_index", 0) or 0
             ncs = r["inputs"]["noncoding_regions"]
             if a >= len(ncs):
                 a = 0
-            nc = ncs[a]
+            # v6: labels.canonical_nc is the bag-level reference (all sites
+            # share it). When present, it becomes tnp.nc and per-site
+            # inputs.noncoding_regions[active] is the SITE-specific nc.
+            # Fall back to the pre-v6 layout when canonical is absent.
+            canonical_nc = r["labels"].get("canonical_nc")
+            if canonical_nc:
+                tnp_ref_nc = canonical_nc
+                site_specific_nc = ncs[a]
+                site_s2c_map = r["labels"].get("site_to_canonical_map")
+            else:
+                tnp_ref_nc = ncs[a]
+                site_specific_nc = None
+                site_s2c_map = None
             if tnp not in tnp_nc:
-                tnp_nc[tnp] = nc
+                tnp_nc[tnp] = tnp_ref_nc
                 arch_meta = dict(r["labels"].get("arch", {}))
-                nc_len = int(r["labels"].get("ncrna_length", len(nc)))
+                # ncrna_length in canonical (== label's ncrna_length under
+                # v6 when the site nc is emitted; == canonical when the
+                # record has canonical_nc explicitly).
+                nc_len = int(r["labels"].get("ncrna_length", len(tnp_ref_nc)))
+                if canonical_nc:
+                    nc_len = len(canonical_nc)
                 # nc_len bucket for scale-invariance analysis
                 if nc_len < 120:
                     arch_meta["nc_len_bucket"] = "070-119"
@@ -207,7 +226,7 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
                     arch_meta["nc_len_bucket"] = "240-300"
                 arch_meta["nc_len"] = nc_len
                 tnp_arch[tnp] = arch_meta
-            elif tnp_nc[tnp] != nc:
+            elif tnp_nc[tnp] != tnp_ref_nc:
                 continue
             gs = r["labels"].get("guide_span_in_active_noncoding")
             if not gs:
@@ -219,6 +238,8 @@ def build_v5_positive(v5_jsonl_path: str, shard_dir: str,
                 target_flank_start=r["labels"].get("planted_start"),
                 gold_nc=int(gs[0]),
                 gold_L=int(r["labels"]["guide_length"]),
+                site_nc=site_specific_nc,
+                site_to_canonical_map=site_s2c_map,
             ))
     records = [TnpRecord(tnp_id=t, family=family_label, nc=tnp_nc[t],
                           sites=ss[:cap_sites])

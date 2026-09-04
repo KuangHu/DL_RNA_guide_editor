@@ -53,6 +53,39 @@ echo "  stats:     $OUT_STATS"
 echo "  manifest:  $OUT_MANIFEST"
 echo "  python:    $PYTHON"
 
+: "${NEG_MODE:=none}"     # none | scattered | partial
+: "${NC_HOMOLOGY_RATE:=}"  # empty = sample uniformly; a float pins the axis
+: "${FLANK_OFFSET_MODE:=}"  # empty = sample uniformly; 'consistent' or 'inconsistent' pins
+: "${N_SITES:=}"           # empty = sample uniformly [3, 8]; int pins (e.g., 5 for A8a compat)
+: "${ACCESSIBILITY_TARGET:=}"  # empty = sample uniformly [0.4, 0.95]; float pins (e.g., 0.85 for pre-1e compat)
+: "${GC_TARGET:=}"             # empty = sample uniformly [0.25, 0.65]; float pins (e.g., 0.5 for pre-1f compat)
+
+HOM_ARG=()
+if [[ -n "$NC_HOMOLOGY_RATE" ]]; then
+    HOM_ARG=(--nc-homology-rate "$NC_HOMOLOGY_RATE")
+    echo "  NC_HOMOLOGY_RATE (override): $NC_HOMOLOGY_RATE"
+fi
+FOM_ARG=()
+if [[ -n "$FLANK_OFFSET_MODE" ]]; then
+    FOM_ARG=(--flank-offset-mode "$FLANK_OFFSET_MODE")
+    echo "  FLANK_OFFSET_MODE (override): $FLANK_OFFSET_MODE"
+fi
+NS_ARG=()
+if [[ -n "$N_SITES" ]]; then
+    NS_ARG=(--n-sites "$N_SITES")
+    echo "  N_SITES (override): $N_SITES"
+fi
+AT_ARG=()
+if [[ -n "$ACCESSIBILITY_TARGET" ]]; then
+    AT_ARG=(--accessibility-target-percentile "$ACCESSIBILITY_TARGET")
+    echo "  ACCESSIBILITY_TARGET (override): $ACCESSIBILITY_TARGET"
+fi
+GC_ARG=()
+if [[ -n "$GC_TARGET" ]]; then
+    GC_ARG=(--gc-target "$GC_TARGET")
+    echo "  GC_TARGET (override): $GC_TARGET"
+fi
+
 cd "$CODEDIR"
 $PYTHON -m scripts.generator_v5.run_generator \
     --n-bags "$N_BAGS" \
@@ -61,6 +94,12 @@ $PYTHON -m scripts.generator_v5.run_generator \
     --out "$OUT_JSONL" \
     --stats-out "$OUT_STATS" \
     --manifest-out "$OUT_MANIFEST" \
+    --negative-mode "$NEG_MODE" \
+    "${HOM_ARG[@]}" \
+    "${FOM_ARG[@]}" \
+    "${NS_ARG[@]}" \
+    "${AT_ARG[@]}" \
+    "${GC_ARG[@]}" \
     --progress-every 500
 
 echo "[$(date -Iseconds)] done"
