@@ -2390,20 +2390,33 @@ RNA-structure priors → can transfer to unknown families.
 IS insertions from `real_data/negative_top10/` (63k loci across
 IS1/IS3/IS4/IS5/IS6/IS66/IS256/IS481/IS1595/ISL3, ORF-HMM-verified
 TnpB-free). Bags grouped by insert_md5 (same element ↔ multi-site),
-insert truncated to 250bp to match training nc_len. **AUROC POS vs
-each family: 0.956-0.977 on all 10 families.** DDE p50 score 2.13-
-2.26 vs POS p50 5.13. Model treats real DDE data exactly as it
-treated synth twin (~2.2 score regime) — the design behaves as
-intended in the deployment direction.
+insert truncated to 250bp to match training nc_len. Initial
+positive comparator was pos50k_synth (AUROC 0.956-0.977 across 10
+families); potentially confounded by "synth vs real".
+
+**5a. Synth-vs-real confound REJECTED**: re-ran with **DurrantWT
+(real natural bridge RNA) as positive** vs same DDE negatives.
+DurrantWT score p50 = **5.098** ≈ pos50k_synth p50 = 5.133 → real
+and synth RNA-guided data collapse to the same score regime.
+**AUROC(DurrantWT vs DDE): 0.9732-0.9952 across 10 families, mean
+0.9897** — UNIFORMLY HIGHER than AUROC(pos50k vs DDE) by ~0.018,
+opposite of what a source-mismatch confound would produce.
+Marginal check: DDE n_sites p50=4 vs positive p50=6 (DDE has fewer
+sites → LESS peak amplification available); the score gap survives.
+Specificity is real, not synth-vs-real.
 
 ### End-to-end coherence
 
-| Dataset | Mechanism | v7-real score | Predicted | Observed |
+| Dataset | Mechanism | v7-real score p50 | Predicted | Observed |
 |---|---|---|---|---|
-| pos50k (synth) | RNA-guided | median 5.13 | high | ✓ high |
-| Durrant WT | real RNA-guided | ±1bp 63.6% at K=5 | high | ✓ high |
+| pos50k (synth) | RNA-guided | **5.13** | high | ✓ high |
+| **Durrant WT (real)** | **RNA-guided (real)** | **5.10** | high | ✓ high (**matches synth**) |
 | Durrant Programmed | RNA-guided, m<8 | null | null (scope) | ✓ null |
-| 10 DDE families (real) | non-RNA-guided | median 2.15-2.26 | low | ✓ low |
+| 10 DDE families (real) | non-RNA-guided | **2.13-2.26** | low | ✓ low |
+
+AUROC(real RNA-guided vs real DDE, 10 families) = **0.9732-0.9952**,
+mean **0.9897**. Both real+real and synth+real comparisons agree;
+confound rejected.
 
 Symmetric verification: works on positive real data (natural bridge
 RNA), doesn't false-positive on negative real data (10 DDE
