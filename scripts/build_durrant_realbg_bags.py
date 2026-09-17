@@ -1,4 +1,27 @@
-"""Rebuild Durrant fake bags with REAL bacterial 120bp flanks.
+"""RETRACTED 2026-09-13 — DO NOT RUN THIS SCRIPT.
+
+Superseded by `scripts/build_durrant_realbg_v2.py`. This script constructed
+120bp flanks by splicing Durrant's 14bp cognate into a random unrelated
+bacterial 120bp flank — a chimera with no biological relationship to the
+actual Durrant insertion sites' genomic context. Every result measured on
+its outputs is UNSCOPED under the 2026-09-10 class-level retraction
+(FROZEN.md).
+
+The correct construction (v2) uses real E. coli BL21(DE3) genomic sequence
+(`NZ_CP053602.1`) extracted 60bp upstream + 60bp downstream around each of
+the 173 WT + 168 Programmed insertion coordinates in Durrant Supp Table 3,
+combined with the IS621 non-coding regions (`nc_region_1` = 193bp 5' of
+tnpA containing the bridge RNA + `nc_region_2` = 107bp 3' of tnpA, derived
+from the 1281bp IS621 whole element in Supp Table 1 via 6-frame CDS
+localization).
+
+Outputs of this script have been moved to
+`.../IS110_gold/inference/_DEPRECATED_wrong_flanks_2026-09-13/` with a
+README explaining the retraction. This script kept in-tree for audit only.
+
+--- Original docstring below (RETRACTED) ---
+
+Rebuild Durrant fake bags with REAL bacterial 120bp flanks.
 
 For each row in IS110_gold_v0.jsonl:
   - Take the cognate 14bp genome_target
@@ -13,6 +36,11 @@ comparison with V4 synthetic NCs.
 
 Both outputs go to /global/scratch/users/kh36969/DL_novel_guide_editor/IS110_gold/inference/
 """
+import sys
+raise SystemExit(
+    "[RETRACTED] build_durrant_realbg_bags.py is retracted 2026-09-13. "
+    "Use build_durrant_realbg_v2.py — see docstring above."
+)
 from __future__ import annotations
 
 import argparse

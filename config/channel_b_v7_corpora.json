@@ -1,0 +1,11 @@
+{
+  "batch_root": "/global/scratch/users/kh36969/DL_novel_guide_editor/v7_full",
+  "shard_root": "/global/scratch/users/kh36969/DL_novel_guide_editor/v7_shards",
+  "corpora": [
+    ["pos50k",     "v7_pos50k.jsonl",     "v7_pos50k_shard"],
+    ["twin50k",    "v7_twin50k.jsonl",    "v7_twin50k_shard"],
+    ["partial40k", "v7_partial40k.jsonl", "v7_partial40k_shard"],
+    ["ctrl10k",    "v7_ctrl10k.jsonl",    "v7_ctrl10k_shard"],
+    ["scat10k",    "v7_scat10k.jsonl",    "v7_scat10k_shard"]
+  ]
+}

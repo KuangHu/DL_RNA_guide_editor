@@ -93,11 +93,29 @@ class Bag:
     negative_mode: str = "none"                      # 'none' | 'scattered' | 'partial'
     per_site_nc_start: list[int] = field(default_factory=list)   # per-site nc_start (scattered) or repeat of bag-level
     per_site_is_planted: list[bool] = field(default_factory=list)  # partial: False for unplanted sites
+    # v7 axis 6 — per-site orient (V7_SPEC §2.4). When empty list, bag
+    # follows legacy bag-level `arch.is_reversed_target` behavior for
+    # every site (v6r2 semantic). When populated, each site's orient
+    # overrides the bag-level; length must equal n_sites.
+    per_site_is_reversed: list[bool] = field(default_factory=list)
+    # v7 — recorded PROV for the sampled `p_same` (the bag's "follow
+    # bag_orient" rate). Only meaningful when per_site_is_reversed is
+    # populated. Default 1.0 = "all sites follow bag orient" = legacy.
+    orient_p_same: float = 1.0
+    # v7 — was this bag built with v7_mode=True? Used at emit time to
+    # decide output_format default. Explicit rather than inferred so a
+    # v7 bag with junction_motif_length=0 is still emitted as v7.
+    v7_mode: bool = False
+    # v7 axis 8 — junction motif (V7_SPEC §2.6). PROV only. Not model input.
+    junction_motif_length: int = 0
+    junction_motif_consistent: bool = False
     # v6 canonical + homology (2026-09-03).
     canonical_nc: str = ""                                    # bag-level canonical active-slot nc (== ncrna_sequences[active] when homology_rate=1.0)
     canonical_fold: str = ""                                  # dot-bracket MFE of canonical_nc; "" for legacy bags
     per_site_site_nc: list[str] = field(default_factory=list) # per-site mutated active-slot nc (== canonical_nc under homology=1.0)
-    per_site_site_to_canonical_map: list[list[int]] = field(default_factory=list)  # per-site site→canonical map
+    per_site_site_to_canonical_map: list[list[int]] = field(default_factory=list)  # per-site site→canonical map (from PairwiseAligner — the SAME function that runs at deploy)
+    per_site_oracle_map: list[list[int]] = field(default_factory=list)  # per-site ground-truth map from the mutation model (diagnostic ONLY; NEVER used as model input — see feedback_conjunction_train_deploy_gap)
+    per_site_epsilon_align: list[float] = field(default_factory=list)   # per-site alignment error rate = disagreement between aligner map and oracle map, normalized by site_nc length
     # v6 Stage 1d twin negative diagnostics.
     twin_tol_used: float = 0.0            # tolerance actually used for percentile matching; 0.0 for non-twin bags
     twin_positions: list[int] = field(default_factory=list)  # per-site canonical positions (twin bags only)
@@ -122,35 +140,53 @@ class Bag:
         }
 
     def to_v42_jsonl(self, m_threshold: int = 8,
-                       include_structure_channels: bool = True) -> list[dict]:
-        """Emit one JSONL record per site. Schema (frozen 2026-08-31):
+                       include_structure_channels: bool = True,
+                       output_format: str | None = None,
+                       generator_version_or_commit: str = "unknown",
+                       build_date: str = "",
+                       flank_pool_source: str | None = None,
+                       ) -> list[dict]:
+        # v7-mode bags default to v7 output; legacy defaults to v6r2. Callers
+        # can still override output_format explicitly (mostly for test).
+        if output_format is None:
+            output_format = "v7" if self.v7_mode else "v6r2"
+        if flank_pool_source is None:
+            flank_pool_source = "synthetic_random" if self.v7_mode else "is_sites"
+        """Emit one JSONL record per site.
 
-        Per site:
-          site_id, transposase_id, ncrna_id
-          inputs.flank, inputs.noncoding_regions
-          labels.is_positive
-          labels.target_position_in_flank  (plant_start, plant_end) — full
-            plant width including split gap; use planted_start / planted_end
-            below for the block-level breakdown.
-          labels.planted_start (=block-A start on flank)
-          labels.planted_A_end, planted_B_start, planted_B_end
-          labels.planted_m       (bag-level; used for competitor-count def)
-          labels.perfect_guide_dna, guide_dna (=mutated_target incl gap for split)
-          labels.guide_length (=L), n_mismatches, mismatch_positions
-          labels.active_noncoding_index, num_noncoding_regions
-          labels.guide_span_in_active_noncoding (=[planted_start_on_nc,
-            planted_start_on_nc + L])
-          labels.ncrna_length
-          labels.arch{}  (all architecture axes + segment_count + orient)
-          labels.all_matching_positions_on_nc  (at fixed m_threshold=8)
-          labels.competitor_count_at_site_planted_m (integer scalar)
-          labels.m_at_planted    (integer scalar, per-site)
+        `output_format`:
+          - "v6r2" (default): frozen v6r2 schema, byte-compatible with existing shards.
+            Emits multi-region noncoding_regions + labels.canonical_nc /
+            canonical_fold / site_to_canonical_map / oracle_map / epsilon_align.
+          - "v7": per V7_SPEC. Emits ONLY 1 nc region (the active), NO
+            canonical_nc / canonical_fold / site_to_canonical_map / oracle_map
+            / epsilon_align in labels (they were the source of the 2026-09-10
+            SUBSTANTIVE_INPUT_MISMATCH retraction). Adds `generator_metadata`
+            with `data_source` / `build_date` / `generator_version_or_commit` /
+            `flank_pool_source` per CANONICAL_BAG_SPEC §2.6.
 
-        Per nc (in nc_channels, list of length num_noncoding_regions):
-          role  ("active" / "inactive")
-          dG_open_u1, dG_open_uL_pn, cooperativity_win_pn, E_span_win,
-          H_pair_win, windowed_valid   (per-position or per-window arrays)
-          has_5p_stem_loop
+        `generator_version_or_commit`, `build_date`, `flank_pool_source`:
+          only used when output_format="v7"; ignored under "v6r2".
+
+        Schema (v6r2 default, frozen 2026-08-31):
+          Per site: site_id, transposase_id, ncrna_id;
+                    inputs.flank, inputs.noncoding_regions;
+                    labels.is_positive / target_position_in_flank /
+                      planted_start / planted_A_end / planted_B_start /
+                      planted_B_end / planted_m / perfect_guide_dna /
+                      guide_dna / guide_length / n_mismatches /
+                      mismatch_positions / active_noncoding_index /
+                      num_noncoding_regions / guide_span_in_active_noncoding /
+                      ncrna_length / arch / all_matching_positions_on_nc /
+                      competitor_count_at_site_planted_m / m_at_planted /
+                      nc_channels
+                    v6r2 also: canonical_nc / canonical_fold /
+                      site_nc_sequence / site_to_canonical_map /
+                      oracle_map / epsilon_align (all DROPPED under v7).
+          Per nc (nc_channels list): role, dG_open_u1, dG_open_uL_pn,
+                                     cooperativity_win_pn, E_span_win,
+                                     H_pair_win, windowed_valid,
+                                     has_5p_stem_loop.
         """
         # Precompute all nc channel blobs once per bag (shared across sites).
         if include_structure_channels:
@@ -187,6 +223,19 @@ class Bag:
         # accept both 'rev' (frozen 50K batch) and 'rc' (new batches).
         arch_meta["orient"] = ("rc" if self.architecture.is_reversed_target
                                 else "fwd")
+        # v7 (V7_SPEC §2.4): emit per-site orient list + p_same as PROV when
+        # per-site orient is populated. Preserves scalar `arch.orient` above
+        # (legacy readers still see it as bag-majority). Loader (data.py)
+        # after 2026-09-10 rev no longer consumes either — both are PROV.
+        if self.per_site_is_reversed:
+            arch_meta["orient_per_site"] = [
+                ("rc" if r else "fwd") for r in self.per_site_is_reversed
+            ]
+            arch_meta["orient_p_same"] = float(self.orient_p_same)
+        # v7 (V7_SPEC §2.6): junction motif PROV.
+        if self.v7_mode:
+            arch_meta["junction_motif_length"] = int(self.junction_motif_length)
+            arch_meta["junction_motif_consistent"] = bool(self.junction_motif_consistent)
         is_positive_bag = (self.negative_mode == "none")
         # Canonical present iff v6 emission path ran (build_bag). Legacy
         # NegativeBag / older code paths that construct Bag without v6
@@ -278,22 +327,52 @@ class Bag:
                 "m_at_planted":   s.m_at_planted,
                 "nc_channels":    nc_channels_per_bag,
             }
-            if has_canonical:
+            if has_canonical and output_format == "v6r2":
                 labels["canonical_nc"] = self.canonical_nc
                 labels["canonical_fold"] = self.canonical_fold
                 labels["site_nc_sequence"] = self.per_site_site_nc[s.site_idx]
                 labels["site_to_canonical_map"] = list(
                     self.per_site_site_to_canonical_map[s.site_idx])
-            recs.append({
+                # Oracle map + ε_align: diagnostic-only fields for ε_align
+                # stratification during Channel B eval. NEVER an input.
+                if s.site_idx < len(self.per_site_oracle_map):
+                    labels["oracle_map"] = list(
+                        self.per_site_oracle_map[s.site_idx])
+                if s.site_idx < len(self.per_site_epsilon_align):
+                    labels["epsilon_align"] = float(
+                        self.per_site_epsilon_align[s.site_idx])
+            # v7 output: skip canonical/site_to_canonical/oracle/epsilon fields
+            # entirely per V7_SPEC §1.1 (removed from INPUT_TENSOR_LABEL_WHITELIST).
+            # active_noncoding_index becomes 0 (only 1 region emitted).
+            if output_format == "v7":
+                labels["active_noncoding_index"] = 0
+                labels["num_noncoding_regions"] = 1
+                # Also emit ONLY the active region — v7 spec: nc_region_count = 1.
+                site_ncs_emit = [site_ncs[self.active_nc_index]]
+            elif output_format == "v6r2":
+                site_ncs_emit = site_ncs
+            else:
+                raise ValueError(f"unknown output_format: {output_format!r}")
+            rec = {
                 "site_id": f"{self.bag_id}_site_{s.site_idx:04d}",
                 "transposase_id": self.bag_id,
                 "ncrna_id": f"{self.bag_id}_ncrna",
                 "inputs": {
                     "flank": s.flank,
-                    "noncoding_regions": site_ncs,
+                    "noncoding_regions": site_ncs_emit,
                 },
                 "labels": labels,
-            })
+            }
+            # v7 generator_metadata per CANONICAL_BAG_SPEC §2.6 (3 required
+            # fields) + flank_pool_source per V7_SPEC §2.2.
+            if output_format == "v7":
+                rec["generator_metadata"] = {
+                    "data_source": f"v7_{self.negative_mode or 'positive'}",
+                    "build_date": build_date,
+                    "generator_version_or_commit": generator_version_or_commit,
+                    "flank_pool_source": flank_pool_source,
+                }
+            recs.append(rec)
         return recs
 
 
@@ -610,9 +689,13 @@ def _assert_inactive_distribution_matched(ncs: list[str], active_idx: int):
             assert ch in "ACGT", f"inactive nc {i} has non-ACGT: {ch!r}"
 
 
-# ---------------- flank pool loader ----------------
+# ---------------- flank sources ----------------
 
-def load_flank_pool() -> list[str]:
+def load_flank_pool_from_is_sites() -> list[str]:
+    """v6r2 legacy flank pool: real downstream 120bp flanks from the 5 DDE
+    IS families in REAL_FLANK_POOL_FAMILIES. Kept for v6r2 reproducibility.
+    v7 does NOT use this — see build_random_flank + V7_SPEC §2.1. Never
+    delete; a v6r2 rerun depends on it byte-for-byte."""
     pool = []
     from scripts.generator_v5.difficulty import (
         REAL_FLANK_POOL_FAMILIES, REAL_FLANK_POOL_BASEDIR, DEFAULT_FLANK_LEN as FL,
@@ -632,6 +715,137 @@ def load_flank_pool() -> list[str]:
         except FileNotFoundError:
             continue
     return pool
+
+
+# Backward-compat alias for v6r2 callers (run_generator.py, run_negatives.py,
+# and any legacy scripts). Do not remove without an audit of every caller.
+load_flank_pool = load_flank_pool_from_is_sites
+
+
+def _gc_weighted_bases(rng: random.Random, gc: float, length: int) -> str:
+    """ACGT string of given length with GC-weighted composition.
+        p(A) = p(T) = (1 - gc) / 2
+        p(G) = p(C) = gc / 2
+    Note: NO special-case for gc==0.5 (unlike sample_ncrna in bag_v2.py:649).
+    Uniform weights path and no-weights path can consume different RNG
+    state on some Python versions, so we always take the weighted path for
+    determinism across arbitrarily-close gc values."""
+    if length == 0:
+        return ""
+    p_at = (1.0 - gc) / 2.0
+    p_gc = gc / 2.0
+    return "".join(rng.choices("ACGT",
+                                  weights=[p_at, p_gc, p_gc, p_at],
+                                  k=length))
+
+
+def build_random_flank(rng: random.Random, gc: float,
+                          length: int = DEFAULT_FLANK_LEN) -> str:
+    """Synthetic random flank per V7_SPEC §2.1. GC-weighted convention.
+    `gc` is BAG-LEVEL — the caller passes the same `gc` for every site in
+    a bag. This function does NOT sample `gc`; do not add it to the
+    signature."""
+    return _gc_weighted_bases(rng, gc, length)
+
+
+# ---------------- junction motif (V7 axis 8) ----------------
+
+# Per V7_SPEC §2.6: 0 (no motif) 50%, each nonzero length 10%.
+#
+# 2026-09-13 v7-real refactor: RETIRED for the v7-real generation path.
+# Weights collapsed to {0: 1.0} — every bag samples motif_length=0.
+# Retirement rationale (spec §2.6 amendment):
+#   - The axis was a statistical distractor (proxy for cross-site sequence
+#     sharing near junction), not a TSD biology model. Its value is now
+#     dominated by the harder real-flank + multi-region-nc difficulty
+#     introduced in the v7-real refactor.
+#   - Junction position needs to migrate from flank[0] (v7 legacy) to
+#     flank[60] (v7-real, mid-flank). Maintaining a position-aware motif
+#     planter isn't worth the cost given (a).
+# Reversibility: restore the original weights list to reactivate the axis
+# without any other code change. Sampler and planter functions are kept.
+_JUNCTION_MOTIF_LENGTHS = [0]
+_JUNCTION_MOTIF_WEIGHTS = [1.0]
+# Original weights preserved for audit / potential reactivation:
+# _JUNCTION_MOTIF_LENGTHS_LEGACY = [0,   4,   6,   8,   9,   10]
+# _JUNCTION_MOTIF_WEIGHTS_LEGACY = [0.5, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+
+def sample_junction_motif(rng: random.Random) -> tuple[int, bool]:
+    """Bag-level sample of (junction_motif_length, junction_motif_consistent).
+    Called ONCE per bag. Per V7_SPEC §2.6."""
+    length = rng.choices(_JUNCTION_MOTIF_LENGTHS,
+                             weights=_JUNCTION_MOTIF_WEIGHTS, k=1)[0]
+    consistent = rng.random() < 0.5
+    return length, consistent
+
+
+def build_motif_bases(rng: random.Random, gc: float, length: int) -> str:
+    """Random ACGT motif string of given length, GC-weighted to match the
+    bag's flank composition (so motif region isn't a composition outlier).
+    Per V7_SPEC §2.6."""
+    return _gc_weighted_bases(rng, gc, length)
+
+
+def sample_site_orients(rng: random.Random, n_sites: int
+                            ) -> tuple[list[str], float]:
+    """v7 per-site orient sampler per V7_SPEC §2.4 (rev5 simplified).
+
+    Returns (orients, p_same) where:
+      - orients: list of length n_sites, each element in {'fwd', 'rc'}
+      - p_same: the sampled per-site "follow bag orient" probability,
+        drawn uniformly from [0.5, 1.0]. Recorded as PROV for stratification.
+
+    Sampling: p_same ~ U(0.5, 1.0); one bag_orient ~ {fwd, rc}; each site
+    independently takes bag_orient with prob p_same else the opposite.
+    Range starts at 0.5 (not 0) because p_same < 0.5 is semantically
+    equivalent to flipping bag_orient — no coverage loss.
+
+    No numpy dep, single random.Random source, p_same directly interpretable
+    (expected per-site same-as-bag-orient rate = p_same exactly)."""
+    p_same = rng.uniform(0.5, 1.0)
+    bag_orient = rng.choice(["fwd", "rc"])
+    other = "rc" if bag_orient == "fwd" else "fwd"
+    orients = [bag_orient if rng.random() < p_same else other
+                   for _ in range(n_sites)]
+    return orients, p_same
+
+
+def sample_planted_m_uniform(rng: random.Random, L: int,
+                                m_range: tuple[int, int] = (8, 11)) -> int:
+    """v7 per-site planted_m sampler per V7_SPEC §2.5 (rev after Step 6b).
+
+    Range NARROWED from U{5..11} to U{8..11} because the low end (5,6,7)
+    is unreachable in practice: at L=11-14 the background m_max at any nc
+    position saturates near 8 (100% of planted_m=5 sites had m_at_planted
+    ≥ 8; verified 2026-09-11 Step 6). Low planted_m only dilutes gold
+    signal (S = |{sites: m ≥ 8}| loses sites whose m sits below threshold
+    by chance despite plant).
+
+    The `m_range` param is kept for testing (call with (5, 11) to reproduce
+    the pre-Step-6b sampler). Default is (8, 11).
+
+    Absolute match count. Upper bound clamped to L; if `m_range[0] > L`
+    this raises."""
+    lo, hi = m_range
+    if hi > L:
+        raise AssertionError(
+            f"sample_planted_m_uniform requires L >= m_range[1]={hi}, got L={L}. "
+            f"If L range is being extended below {hi}, re-review V7_SPEC §2.5.")
+    if lo > hi:
+        raise AssertionError(f"m_range malformed: {m_range}")
+    return rng.randint(lo, hi)
+
+
+def plant_junction_motif(flank: str, motif: str) -> str:
+    """Overwrite flank[0:len(motif)] with motif, verbatim. Preserves the
+    flank's total length. Per V7_SPEC §2.6.1: motif is planted AS-IS in the
+    recorded flank string, NO reverse-complement based on site orient."""
+    if not motif:
+        return flank
+    if len(motif) > len(flank):
+        raise ValueError(f"motif ({len(motif)}) longer than flank ({len(flank)})")
+    return motif + flank[len(motif):]
 
 
 # ---------------- top-level ----------------
@@ -802,7 +1016,17 @@ def build_bag(
     flank_offset_mode: str | None = None,
     accessibility_target_percentile: float | None = None,
     gc_target: float | None = None,
+    v7_mode: bool = False,
 ) -> Bag | None:
+    # v7 SINGLE-FLAG SEMANTIC (2026-09-10 rev): `v7_mode=True` activates ALL
+    # v7 axes together — flank source (synthetic random via
+    # build_random_flank), junction motif (§2.6 planted verbatim), planted_m
+    # sampler (uniform U{5..min(11, L)} via sample_planted_m_uniform), per-site
+    # orient (§2.4 via sample_site_orients), and v7 output format (drops
+    # canonical_nc / canonical_fold / site_to_canonical_map, single nc
+    # region, generator_metadata with 3 required fields). Half-modes (e.g.
+    # v7 orient but legacy planted_m) are BANNED — no spec covers them.
+    # `v7_mode=False` = v6r2 legacy semantic, byte-compatible.
     """`n_sites`: when None, drawn uniformly from DEFAULT_N_SITES_RANGE
     inside sample_difficulty (Stage 1c). When an int, PIN it (adds no
     extra RNG consumption vs pre-1c code — required for A8a byte
@@ -968,9 +1192,23 @@ def build_bag(
     # made Channel A's S=5 conjunction trivial: 55% of bags had range=0,
     # 80% had all-5-hits by construction. Per-site draws restore the
     # probabilistic-hit premise Channel A operates on.
+    # v7 mode (V7_SPEC §2.5): uniform U{5..min(11, L)} instead of tail-around-target_m.
     from scripts.generator_v5.difficulty import sample_planted_m
-    per_site_planted_m = [sample_planted_m(rng, diff.target_m) for _ in range(n_sites)]
+    if v7_mode:
+        per_site_planted_m = [sample_planted_m_uniform(rng, diff.L) for _ in range(n_sites)]
+    else:
+        per_site_planted_m = [sample_planted_m(rng, diff.target_m) for _ in range(n_sites)]
     per_site_n_mismatches = [max(0, diff.L - m) for m in per_site_planted_m]
+
+    # v7 axis 6 (V7_SPEC §2.4). Under `v7_mode=True`, sample
+    # per-site orient list + p_same. Under `False` (v6r2 default), all
+    # sites inherit arch.is_reversed_target (bit-exact to legacy).
+    if v7_mode:
+        _orients_str, orient_p_same_val = sample_site_orients(rng, n_sites)
+        per_site_is_reversed_list = [(s == "rc") for s in _orients_str]
+    else:
+        per_site_is_reversed_list = [arch.is_reversed_target] * n_sites
+        orient_p_same_val = 1.0
 
     # 5' stem-loop flags: dot-bracket MFE per nc. Also capture the
     # canonical (active-slot) dot-bracket structure — v6 canonical_fold.
@@ -990,9 +1228,40 @@ def build_bag(
     per_site_is_planted: list[bool] = []       # True for planted, False for partial-unplanted
     per_site_site_nc: list[str] = []
     per_site_site_to_canonical_map: list[list[int]] = []
-    if len(flank_pool) < n_sites:
-        raise RuntimeError(f"flank pool size {len(flank_pool)} < n_sites {n_sites}")
-    fl_idx = rng.sample(range(len(flank_pool)), n_sites)
+    per_site_oracle_map: list[list[int]] = []
+    per_site_epsilon_align: list[float] = []
+    # v7 mode (V7_SPEC §2.1 + §2.6): replace flank pool with n_sites freshly-
+    # sampled synthetic random flanks + per-bag junction motif planted at
+    # flank[0:motif_len]. Legacy: consume the passed-in flank_pool.
+    if v7_mode:
+        motif_len, motif_consistent = sample_junction_motif(rng)
+        if motif_consistent and motif_len > 0:
+            _shared_motif = build_motif_bases(rng, arch.gc_target, motif_len)
+        else:
+            _shared_motif = None
+        _v7_flanks = []
+        for _s_idx in range(n_sites):
+            fl = build_random_flank(rng, arch.gc_target)
+            if motif_len > 0:
+                if _shared_motif is not None:
+                    site_motif = _shared_motif
+                else:
+                    site_motif = build_motif_bases(rng, arch.gc_target, motif_len)
+                fl = plant_junction_motif(fl, site_motif)
+            _v7_flanks.append(fl)
+        # Under v7 the "pool" IS exactly the n_sites flanks we just built.
+        flank_pool = _v7_flanks
+        # Ordered use (no re-sample); RNG consumption diverges from v6r2
+        # (v6r2 uses rng.sample) — intentional, v7 has no byte-compat contract.
+        fl_idx = list(range(n_sites))
+        _v7_junction_motif_length = int(motif_len)
+        _v7_junction_motif_consistent = bool(motif_consistent)
+    else:
+        if len(flank_pool) < n_sites:
+            raise RuntimeError(f"flank pool size {len(flank_pool)} < n_sites {n_sites}")
+        fl_idx = rng.sample(range(len(flank_pool)), n_sites)
+        _v7_junction_motif_length = 0
+        _v7_junction_motif_consistent = False
 
     # Bag-shared flank offset (2026-09-02 — 2nd coherence axis). Under
     # arch.flank_offset_mode == "consistent" all 5 sites plant at
@@ -1062,6 +1331,7 @@ def build_bag(
             # (scattered's cross-site coherence is destroyed elsewhere).
             site_nc_seq = canonical_nc
             s2c_map = list(range(len(canonical_nc)))
+            oracle_map = list(range(len(canonical_nc)))
         else:
             # nc_homology_rate = fraction of positions kept identical to
             # canonical. Mutation rate is 1 - homology. See _mutate_preserving_guide
@@ -1069,12 +1339,24 @@ def build_bag(
             # as mutation_rate, producing a corpus at ~5% homology at
             # nc_homology_rate=0.95.
             mutation_rate = 1.0 - arch.nc_homology_rate
-            site_nc_seq, _gt_map = _mutate_preserving_guide(
+            site_nc_seq, oracle_map = _mutate_preserving_guide(
                 canonical_nc, mutation_rate, rng,
                 guide_span=(site_nc_start, site_nc_start + diff.L))
             s2c_map = _pairwise_align_site_to_canonical(canonical_nc, site_nc_seq)
         per_site_site_nc.append(site_nc_seq)
         per_site_site_to_canonical_map.append(s2c_map)
+        per_site_oracle_map.append(oracle_map)
+        # ε_align = position-wise disagreement rate between aligner and
+        # oracle maps, normalized by site_nc length. Both maps have length
+        # len(site_nc). A mismatch at position k means aligner assigned a
+        # different canonical position than the mutation model's truth.
+        # -1 vs -1 counts as agreement; any other divergence counts as
+        # disagreement. Diagnostic-only field for ε_align stratification.
+        if len(s2c_map) == len(oracle_map) and len(s2c_map) > 0:
+            n_diff = sum(1 for a, b in zip(s2c_map, oracle_map) if a != b)
+            per_site_epsilon_align.append(n_diff / len(s2c_map))
+        else:
+            per_site_epsilon_align.append(0.0)
 
         # Choose plant_start per the flank_offset_mode axis.
         if arch.flank_offset_mode == "consistent":
@@ -1082,12 +1364,16 @@ def build_bag(
         else:
             site_plant_start = None    # let _plant_target_on_flank draw uniformly
 
+        # v7: per-site orient. Under legacy (v7_mode=False)
+        # this is bit-exact to `arch.is_reversed_target` since all list
+        # elements equal it.
+        site_is_reversed = per_site_is_reversed_list[i]
         if is_planted:
             (flank_final, A_start, A_end, B_start, B_end,
              mutated_concat, mm_pos) = _plant_target_on_flank(
                 base_flank, site_guide_A, site_guide_B,
                 arch.is_split, arch.split_gap,
-                arch.is_reversed_target, site_n_mismatches, rng,
+                site_is_reversed, site_n_mismatches, rng,
                 mm_concentration=arch.mm_concentration,
                 mm_anchor=arch.mm_anchor,
                 plant_start=site_plant_start,
@@ -1102,7 +1388,7 @@ def build_bag(
             (flank_final, A_start, A_end, B_start, B_end) = _fake_plant_on_flank(
                 base_flank, site_guide_A, site_guide_B,
                 arch.is_split, arch.split_gap,
-                arch.is_reversed_target, rng,
+                site_is_reversed, rng,
                 plant_start=site_plant_start,
             )
             mutated_concat = ""
@@ -1158,6 +1444,17 @@ def build_bag(
         canonical_fold=canonical_fold,
         per_site_site_nc=per_site_site_nc,
         per_site_site_to_canonical_map=per_site_site_to_canonical_map,
+        per_site_oracle_map=per_site_oracle_map,
+        per_site_epsilon_align=per_site_epsilon_align,
         twin_tol_used=twin_tol_used,
         twin_positions=list(twin_positions),
+        # v7 axis 6 (V7_SPEC §2.4). Only populated when v7_mode=True;
+        # empty list under v6r2 default (all sites inherit arch.is_reversed_target
+        # via per_site_is_reversed_list construction above).
+        per_site_is_reversed=(list(per_site_is_reversed_list)
+                                  if v7_mode else []),
+        orient_p_same=(orient_p_same_val if v7_mode else 1.0),
+        v7_mode=v7_mode,
+        junction_motif_length=_v7_junction_motif_length,
+        junction_motif_consistent=_v7_junction_motif_consistent,
     )

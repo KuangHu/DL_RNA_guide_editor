@@ -65,7 +65,17 @@ def main() -> int:
     ap.add_argument("--manifest-out", type=str, default=None)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--progress-every", type=int, default=500)
+    ap.add_argument("--v7", action="store_true",
+                     help="v7 mode is NOT supported by this script — it uses "
+                          "build_negative_bag which is a legacy simpler path. "
+                          "For v7 negatives, use run_generator.py with "
+                          "--negative-mode {scattered,partial,twin} --v7.")
     args = ap.parse_args()
+    if args.v7:
+        raise SystemExit(
+            "run_negatives.py does not support v7. Use `run_generator.py "
+            "--v7 --negative-mode scattered|partial|twin` instead — that "
+            "path routes through build_bag which has v7_mode wired.")
 
     print(f"[gen-neg] preflight")
     load_or_build_rate_table(rebuild=False)

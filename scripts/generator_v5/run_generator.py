@@ -33,26 +33,57 @@ import RNA
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.generator_v5.bag_v2 import Bag, build_bag, load_flank_pool
+from scripts.generator_v5.bag_v7_real import (
+    build_bag_v7_real, v7_real_to_jsonl_records,
+    VALID_V7_REAL_NEGATIVE_MODES,
+)
 from scripts.generator_v5.difficulty import load_or_build_rate_table
+from scripts.generator_v5.real_flank_pool import RealFlankPool
 
 
 # Worker-local state (set once per process by initializer).
 _WORKER_TBL = None
 _WORKER_FL = None
+_WORKER_REAL_POOL = None
 
 
-def _worker_init():
-    """Loaded once per multiprocessing worker."""
-    global _WORKER_TBL, _WORKER_FL
+def _worker_init(v7_mode: bool = False, v7_real_mode: bool = False):
+    """Loaded once per multiprocessing worker.
+
+    - v7_real_mode: loads the RealFlankPool (50 bacterial genomes) and
+      SKIPS the rate table + is_sites pool.
+    - v7_mode: skips both real and is_sites pool (build_bag synthesizes
+      random flanks per site).
+    - default: legacy v6r2 loads rate table + is_sites pool.
+    """
+    global _WORKER_TBL, _WORKER_FL, _WORKER_REAL_POOL
+    if v7_real_mode:
+        # v7-real: real genomic flanks, no rate table, no is_sites pool.
+        _WORKER_TBL = None
+        _WORKER_FL = []
+        _WORKER_REAL_POOL = RealFlankPool.load_default()
+        return
     _WORKER_TBL = load_or_build_rate_table(rebuild=False)
-    _WORKER_FL = load_flank_pool()
+    if v7_mode:
+        _WORKER_FL = []
+    else:
+        _WORKER_FL = load_flank_pool()
+    _WORKER_REAL_POOL = None
 
 
 def _worker_build_bag(args):
     """Build ONE bag in a worker. args tuple length grows with each new
-    axis; oldest tuple shapes still accepted for callers that predate."""
+    axis; oldest tuple shapes still accepted for callers that predate.
+
+    A trailing element of the tuple = "v7_real" (11-tuple form) routes to
+    build_bag_v7_real which uses the RealFlankPool and reversed-flow
+    (see bag_v7_real.py). All other tuple lengths dispatch to legacy
+    build_bag (bag_v2.py).
+    """
     accessibility_target_percentile = None
     gc_target = None
+    v7_mode = False
+    v7_real_mode = False
     if len(args) == 3:
         idx, seed, include_channels = args
         negative_mode = "none"; nc_homology_rate = None
@@ -73,21 +104,63 @@ def _worker_build_bag(args):
         (idx, seed, include_channels, negative_mode, nc_homology_rate,
          flank_offset_mode, n_sites_override,
          accessibility_target_percentile) = args
-    else:
+    elif len(args) == 9:
         (idx, seed, include_channels, negative_mode, nc_homology_rate,
          flank_offset_mode, n_sites_override,
          accessibility_target_percentile, gc_target) = args
+    elif len(args) == 10:
+        (idx, seed, include_channels, negative_mode, nc_homology_rate,
+         flank_offset_mode, n_sites_override,
+         accessibility_target_percentile, gc_target, v7_mode) = args
+    else:
+        # 11-tuple: v7_real flag at the tail
+        (idx, seed, include_channels, negative_mode, nc_homology_rate,
+         flank_offset_mode, n_sites_override,
+         accessibility_target_percentile, gc_target,
+         v7_mode, v7_real_mode) = args
+
     rng = random.Random(seed)
+
+    if v7_real_mode:
+        # v7-real path: real 60+60 genomic flank + multi-region synthetic
+        # nc + reversed flow. n_sites: honor CLI override; else uniform {3..8}.
+        # bag_id carries `v7real_{mode}_` prefix so downstream caches keyed on
+        # bag_id CANNOT collide with v7 or v6r2 (which use `bag_XXXXXX`).
+        # See feedback-cache-content-key: v7 cache poisoning was exactly a
+        # bag_id collision.
+        assert _WORKER_REAL_POOL is not None, "worker was not initialized in v7_real_mode"
+        bag_id = f"v7real_{negative_mode}_bag_{idx:06d}"
+        bag = build_bag_v7_real(bag_id, rng, _WORKER_REAL_POOL,
+                                     n_sites=n_sites_override,
+                                     negative_mode=negative_mode,
+                                     gc=(gc_target if gc_target is not None else 0.5))
+        if bag is None:
+            return None
+        # v7-real has no per-bag structural summary yet (planned for
+        # after full-gen acceptance). Emit a minimal summary that
+        # summarize_bag consumers won't crash on.
+        summary = {
+            "bag_id":       bag.bag_id,
+            "n_sites":      bag.n_sites,
+            "negative_mode": bag.negative_mode,
+            "gc":           bag.gc,
+            "v7_real":      True,
+        }
+        records = v7_real_to_jsonl_records(bag)
+        return summary, records
+
     b = build_bag(f"bag_{idx:06d}", rng, _WORKER_FL, _WORKER_TBL,
                     n_sites=n_sites_override,
                     negative_mode=negative_mode,
                     nc_homology_rate=nc_homology_rate,
                     flank_offset_mode=flank_offset_mode,
                     accessibility_target_percentile=accessibility_target_percentile,
-                    gc_target=gc_target)
+                    gc_target=gc_target,
+                    v7_mode=v7_mode)
     if b is None:
         return None
     summary = summarize_bag(b)
+    # v7 bags emit their own format via `Bag.v7_mode`; legacy bags stay v6r2.
     records = b.to_v42_jsonl(include_structure_channels=include_channels)
     return summary, records
 
@@ -495,12 +568,57 @@ def main() -> int:
                           "ACGT pre-1f; rng.choices at equal weights is "
                           "byte-identical to unweighted). None = sample "
                           "uniformly from DEFAULT_GC_TARGET_RANGE.")
+    ap.add_argument("--v7", action="store_true",
+                     help="v7 single-flag: activates all v7 semantics — "
+                          "synthetic random flank (build_random_flank) instead "
+                          "of load_flank_pool_from_is_sites; junction motif "
+                          "(sample_junction_motif); planted_m U{8..min(11,L)} "
+                          "via sample_planted_m_uniform; per-site orient via "
+                          "sample_site_orients; v7 output format (single nc "
+                          "region, no canonical_nc/canonical_fold/"
+                          "site_to_canonical_map, generator_metadata with "
+                          "4 required fields). Per V7_SPEC.md.")
+    ap.add_argument("--v7-real", action="store_true",
+                     help="v7-real refactor (2026-09-13): real 60+60 genomic "
+                          "flanks from 50-bacterial-genome pool; junction at "
+                          "position 60; multi-region synthetic nc with "
+                          "concat_with_N_spacer scoring; REVERSED FLOW (guide "
+                          "sequence read from real flank's target region, then "
+                          "minimally mutated to hit planted_m). Wide axes: "
+                          "target_L U{9..14}, planted_m U{8..min(11,L)}, "
+                          "center_offset U[-40,+40], nc_len U[100,250]. "
+                          "Negative modes: {none, twin, partial, scattered}. "
+                          "Junction motif retired (weights [1.0]). Mutually "
+                          "exclusive with --v7.")
     args = ap.parse_args()
 
-    print(f"[gen] preflight: rate table + flank pool")
-    tbl = load_or_build_rate_table(args.rate_table_path, rebuild=False)
-    fl = load_flank_pool()
-    print(f"[gen] flank pool = {len(fl)} sequences; rate_table L in {tbl.L_range}")
+    if args.v7 and args.v7_real:
+        ap.error("--v7 and --v7-real are mutually exclusive")
+    if args.v7_real and args.negative_mode not in VALID_V7_REAL_NEGATIVE_MODES:
+        ap.error(
+            f"--v7-real requires --negative-mode in {VALID_V7_REAL_NEGATIVE_MODES}; "
+            f"got {args.negative_mode!r}")
+
+    print(f"[gen] preflight")
+    if args.v7_real:
+        # v7-real: real bacterial genome pool, no rate table, no is_sites pool.
+        # (Loaded only for the console print; each worker reloads its own copy.)
+        real_pool = RealFlankPool.load_default()
+        print(f"[gen] v7-real mode: real-flank pool = {len(real_pool.genomes)} genomes, "
+              f"{real_pool.total_len:,} bp; rate table SKIPPED; is_sites pool BYPASSED")
+        del real_pool
+        tbl = None
+        fl = []
+    else:
+        tbl = load_or_build_rate_table(args.rate_table_path, rebuild=False)
+        if args.v7:
+            # v7 doesn't consume the pool; build_bag synthesizes flanks per site.
+            # Pass empty list to satisfy the interface.
+            fl = []
+            print(f"[gen] v7 mode: flank pool BYPASSED (synthetic random per site)")
+        else:
+            fl = load_flank_pool()
+            print(f"[gen] flank pool = {len(fl)} sequences; rate_table L in {tbl.L_range}")
 
     out_fp = None
     if args.out:
@@ -512,7 +630,8 @@ def main() -> int:
     per_bag_seeds = [master_rng.randrange(0, 2**31 - 1) for _ in range(args.n_bags)]
     tasks = [(i, per_bag_seeds[i], args.include_channels, args.negative_mode,
                 args.nc_homology_rate, args.flank_offset_mode, args.n_sites,
-                args.accessibility_target_percentile, args.gc_target)
+                args.accessibility_target_percentile, args.gc_target,
+                args.v7, args.v7_real)
              for i in range(args.n_bags)]
 
     bag_stats: list[dict] = []
@@ -520,7 +639,7 @@ def main() -> int:
     skips = 0
     try:
         if args.workers <= 1:
-            _worker_init()
+            _worker_init(v7_mode=args.v7, v7_real_mode=args.v7_real)
             for k, tsk in enumerate(tasks):
                 r = _worker_build_bag(tsk)
                 if r is None:
@@ -537,7 +656,8 @@ def main() -> int:
                           f"{dt:.1f}s ({dt/(k+1)*1000:.0f} ms/bag)")
         else:
             print(f"[gen] launching {args.workers} workers")
-            with mp.Pool(args.workers, initializer=_worker_init) as pool:
+            with mp.Pool(args.workers, initializer=_worker_init,
+                             initargs=(args.v7, args.v7_real)) as pool:
                 for k, r in enumerate(pool.imap_unordered(_worker_build_bag,
                                                             tasks, chunksize=8), 1):
                     if r is None:
@@ -560,8 +680,22 @@ def main() -> int:
     print(f"[gen] done in {dt:.1f}s ({dt/max(args.n_bags,1)*1000:.0f} ms/bag), "
           f"skips={skips}")
 
-    report = acceptance_report(bag_stats)
-    print_report(report)
+    if args.v7 or args.v7_real:
+        mode_name = "v7-real" if args.v7_real else "v7"
+        print(f"\n=== v6r2-calibrated acceptance tests: SKIPPED ({mode_name} mode) ===")
+        print("  test1a/1b/1c/2a/2b are calibrated against v6r2 (planted_m tail")
+        print("  + is_sites flank pool). v7/v7-real use U{8..11} planted_m +")
+        print("  synthetic-or-real flanks with different regimes; those")
+        print("  thresholds don't apply. v7 has its own smoke/dist checks;")
+        print("  v7-real acceptance is via the construction-verification path")
+        print("  (pairwise target similarity + S_at_gold; see")
+        print("  finding-max-p-S-saturates).")
+        report = {f"{mode_name}_mode_skipped": True,
+                     "reason": "v6r2-calibrated thresholds not applicable",
+                     "n_bags": len(bag_stats)}
+    else:
+        report = acceptance_report(bag_stats)
+        print_report(report)
     if args.stats_out:
         Path(args.stats_out).parent.mkdir(parents=True, exist_ok=True)
         with open(args.stats_out, "w") as f:
