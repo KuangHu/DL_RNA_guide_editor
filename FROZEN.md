@@ -2326,6 +2326,24 @@ coherent story. Freeze snapshot for external reference.
 [[finding-val-auroc-simpson]] for why the pool is
 Simpson-distorted vs stratified cells 0.83-0.98).
 
+### v1 complete state (one-glance summary)
+
+| Dimension | Result |
+|---|---|
+| Synth-internal gates | C3/C4 PASS; pos-vs-twin AUROC 0.86 → 0.98 monotonic (n_sites 3 → 8) |
+| Real+ transfer (Durrant WT) | ±1bp accuracy K=1 47% → K=5 63.6%; shuffle 1-2.6% |
+| Real− specificity (10 DDE families) | AUROC(DurrantWT vs DDE) 0.973-0.995, mean 0.9897 |
+| Synth vs real consistency | pos50k p50 = 5.13 ≈ DurrantWT p50 = 5.10 (same regime) |
+| Known scope boundary | Low m: Durrant Programmed null; held-out-m Δ ≈ +0.01 |
+
+Each row is derivable from primary evidence recorded below and in
+`memory/`. Each row supports a different failure mode of the claim:
+synth-internal (does the mechanism exist?), real+ (does it survive
+distribution shift into real data?), real− (does the mechanism
+generalize to reject non-RNA-guided real data?), synth-vs-real
+(is the transfer real or a source-mismatch artifact?), scope (where
+does it break?).
+
 ### Corpora
 - Training: 5-corpus v7-real 160k bags (pos50k / twin50k /
   partial40k / ctrl10k / scat10k), real 60+60 bacterial flanks from
