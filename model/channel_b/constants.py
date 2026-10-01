@@ -2,8 +2,14 @@
 from __future__ import annotations
 
 # --- L axis (guide-window sizes) --------------------------------------
+# V8 (2026-09-23): widened to L=9..14 to match V8 generator's target_L
+# U{9..14}. Previous v7-real range was L=9..12 (frozen at
+# `v7-real-frozen`). Widening triggers: N_CHANNELS 15→19 (add
+# m_max_L13/L14 + flank_dev_L13/L14), _MULTI_REGION_SPACER_LEN 11→13
+# (in data.py, computed as MAX_L-1). Structure window in data.py
+# also moves from L=12 to L=14 as a follow-on.
 
-Ls: tuple[int, ...] = (9, 10, 11, 12)
+Ls: tuple[int, ...] = (9, 10, 11, 12, 13, 14)
 MAX_L: int = max(Ls)
 
 # --- site axis --------------------------------------------------------
@@ -20,20 +26,48 @@ MAX_N_SITES: int = 8
 #   3. re-running C6 LDA to confirm the channel doesn't inflate structure leakage
 
 CHANNELS: tuple[str, ...] = (
-    # 4 per-site per-position m_max channels, one per L
-    "m_max_L9", "m_max_L10", "m_max_L11", "m_max_L12",
+    # 6 per-site per-position m_max channels, one per L (V8: L=9..14)
+    "m_max_L9", "m_max_L10", "m_max_L11", "m_max_L12", "m_max_L13", "m_max_L14",
     # 4 per-position structure channels — broadcast across sites in a bag
     "dG_open_uL_pn", "H_pair_win", "cooperativity_win_pn", "E_span_win",
     # 1 per-position structure validity mask (0 where E_span/H_pair NaN)
     "structure_valid",
-    # 4 per-site per-position flank_argmax channels — relative to bag-median
+    # 6 per-site per-position flank_argmax channels — relative to bag-median
     # (centred coherence signal, one per L)
     "flank_dev_L9", "flank_dev_L10", "flank_dev_L11", "flank_dev_L12",
-    # 2 per-site orientation one-hots (constant along position axis)
+    "flank_dev_L13", "flank_dev_L14",
+    # 2 per-site orientation one-hots — LEGACY ZERO SLOTS (2026-09-10 rev).
+    # Retained for architectural continuity; always zero at load time.
     "orient_fwd", "orient_rc",
+    # 1 bag-level scalar broadcast to all (site, position) cells:
+    #   flank_bg_identity = mean pairwise Hamming similarity across sites'
+    #   flanks, computed on flank[:FLANK_BG_EXCL_LO] + flank[FLANK_BG_EXCL_HI:]
+    #   (excludes the target-mutation + conserved-region rewrite envelope).
+    # V8 mode 4 (repeat_flank) exercises this at ~0.96; positive at ~0.26.
+    # See FROZEN "V8 flank_bg_identity channel" for rationale + window
+    # dependency on CENTER_OFFSET + RNA_CONSERVED_LEN_MAX.
+    "flank_bg_identity",
 )
-assert len(CHANNELS) == 15
+assert len(CHANNELS) == 20, f"V8 channel count changed: {len(CHANNELS)}"
 N_CHANNELS: int = len(CHANNELS)
+
+# --- flank_bg_identity window ------------------------------------------
+# Fixed exclusion window covering the target-mutation + conserved-region
+# rewrite envelope. Derivation:
+#   target_start ∈ [ts_lo_bound, ts_hi_bound] ≈ [1..36, 71..96]
+#     (from JUNCTION_POS=60 ± CENTER_OFFSET=15 ± TARGET_START_JITTER=2)
+#   left_conserved_len ∈ U[15, RNA_CONSERVED_LEN_MAX=35]
+#   right_conserved_len ∈ U[15, 35]
+#   → rewrite span ≈ [ts − left_cons, ts + L + right_cons] ⊂ [~1, ~120]
+#   typical rewrite envelope ⊂ [30, 90]
+# Empirical validation (v8_bgchk job 26429414):
+#   fixed [30,90] gives 0.258 (positive) vs 0.962 (repeat_flank) — clean.
+#
+# **Coupling warning:** if CENTER_OFFSET, RNA_CONSERVED_LEN_MAX,
+# JUNCTION_POS, or TARGET_START_JITTER change in bag_v7_real.py, this
+# window must move. Not derived automatically — declared here.
+FLANK_BG_EXCL_LO: int = 30
+FLANK_BG_EXCL_HI: int = 90
 
 
 # --- label whitelist / blacklist --------------------------------------
@@ -129,8 +163,12 @@ FLANK_DEV_SCALE: float = 10.0
 # dataset stat file (that would recreate the train/deploy gap).
 
 CHANNEL_SCALES: dict[str, float] = {
-    # m_max / L_max: bounded values, [0, L] → [0, 1]
-    "m_max_L9":  12.0, "m_max_L10": 12.0, "m_max_L11": 12.0, "m_max_L12": 12.0,
+    # m_max / MAX_L: bounded values, [0, L] → [0, L/MAX_L]. Divisor uses
+    # MAX_L (upper bound) so per-L channels stay on the same numeric
+    # scale. V8 (2026-09-23): MAX_L 12→14 → divisor 12.0→14.0 for all
+    # m_max channels; new m_max_L13/L14 use the same 14.0.
+    "m_max_L9":  14.0, "m_max_L10": 14.0, "m_max_L11": 14.0,
+    "m_max_L12": 14.0, "m_max_L13": 14.0, "m_max_L14": 14.0,
     # structure channels
     "dG_open_uL_pn":        0.2,   # kcal/mol; typical 0.05-0.5
     "H_pair_win":           1.0,   # nats; typical 0.3-0.7
@@ -138,9 +176,13 @@ CHANNEL_SCALES: dict[str, float] = {
     "E_span_win":          20.0,   # nt; typical 15-20, spec §Item 4.5 marks this as the weakest channel
     "structure_valid":      1.0,   # binary
     # flank_dev — already divided by FLANK_DEV_SCALE inside data.py; no further scale
-    "flank_dev_L9":  1.0, "flank_dev_L10": 1.0, "flank_dev_L11": 1.0, "flank_dev_L12": 1.0,
+    "flank_dev_L9":  1.0, "flank_dev_L10": 1.0, "flank_dev_L11": 1.0,
+    "flank_dev_L12": 1.0, "flank_dev_L13": 1.0, "flank_dev_L14": 1.0,
     # orient one-hots — already [0, 1]
     "orient_fwd": 1.0, "orient_rc": 1.0,
+    # flank_bg_identity is already in [0, 1] by construction (mean Hamming
+    # fraction); no additional scaling.
+    "flank_bg_identity": 1.0,
 }
 assert set(CHANNEL_SCALES) == set(CHANNELS), (
     f"CHANNEL_SCALES keys mismatch CHANNELS: "

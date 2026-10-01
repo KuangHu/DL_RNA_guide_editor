@@ -26,7 +26,9 @@ Negative modes:
                different positions (avoiding edges, and each other).
 """
 from __future__ import annotations
+import gzip
 import random
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -38,18 +40,163 @@ from scripts.generator_v5.bag_v2 import (
 from scripts.generator_v5.real_flank_pool import RealFlankPool
 
 
+# ---- V8.2 (2026-09-27) Rfam bacterial ncRNA pool ----
+# Loaded lazily on first bracket draw. Downloaded gz FASTA per family
+# cached on scratch. 8 bacterial families in the 100-250bp range so
+# every bracket window (max = RNA_CONSERVED_LEN_MAX × 2 + TARGET_L_MAX
+# = 35 + 14 + 35 = 84 bp) fits inside a family seed sequence.
+# See finding_v81_rfam_scaffold_visibility for the source rationale.
+_RFAM_CACHE_DIR = Path("/global/scratch/users/kh36969/DL_novel_guide_editor/"
+                          "v81_rfam_cache")
+_RFAM_FAMILIES = ("RF00013", "RF00050", "RF00080", "RF00114",
+                    "RF00174", "RF00234", "RF00504", "RF01055")
+_RFAM_URL_TEMPLATE = ("https://ftp.ebi.ac.uk/pub/databases/Rfam/CURRENT/"
+                        "fasta_files/{fam}.fa.gz")
+_RFAM_MIN_SEQ_LEN = 100
+_RFAM_MAX_SEQ_LEN = 250
+_RFAM_POOL: list[str] | None = None
+_RFAM_POOL_BY_FAMILY: dict[str, list[str]] | None = None
+
+
+def _load_rfam_pool() -> list[str]:
+    """Load bacterial Rfam seed sequences from disk cache, downloading
+    families that aren't cached yet. Filters to [MIN, MAX] length and
+    ACGT-only (U→T). Returns FLAT list (audits still use this); the
+    per-family index is populated in _RFAM_POOL_BY_FAMILY at the same
+    time so `_sample_rfam_window` can do family-balanced sampling."""
+    global _RFAM_POOL, _RFAM_POOL_BY_FAMILY
+    if _RFAM_POOL is not None:
+        return _RFAM_POOL
+    _RFAM_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    by_family: dict[str, list[str]] = {}
+    pool: list[str] = []
+    for fam in _RFAM_FAMILIES:
+        p = _RFAM_CACHE_DIR / f"{fam}.fa.gz"
+        if not p.exists():
+            url = _RFAM_URL_TEMPLATE.format(fam=fam)
+            with urllib.request.urlopen(url, timeout=60) as r:
+                p.write_bytes(r.read())
+        text = gzip.decompress(p.read_bytes()).decode("utf-8",
+                                                            errors="replace")
+        fam_seqs: list[str] = []
+        header = None
+        parts: list[str] = []
+
+        def _maybe_keep(bases_parts: list[str]) -> None:
+            s = ("".join(bases_parts).upper().replace("U", "T")
+                    .replace(".", "").replace("-", ""))
+            if (_RFAM_MIN_SEQ_LEN <= len(s) <= _RFAM_MAX_SEQ_LEN
+                    and all(c in "ACGT" for c in s)):
+                fam_seqs.append(s)
+
+        for line in text.splitlines():
+            if line.startswith(">"):
+                if header is not None:
+                    _maybe_keep(parts)
+                header = line[1:]
+                parts = []
+            else:
+                parts.append(line.strip())
+        if header is not None:
+            _maybe_keep(parts)
+
+        by_family[fam] = fam_seqs
+        pool.extend(fam_seqs)
+
+    empty_families = [f for f, xs in by_family.items() if not xs]
+    if empty_families:
+        raise RuntimeError(
+            f"Rfam pool empty for families {empty_families} — check "
+            f"{_RFAM_CACHE_DIR} and family list {_RFAM_FAMILIES}")
+    _RFAM_POOL = pool
+    _RFAM_POOL_BY_FAMILY = by_family
+    return pool
+
+
+def _sample_rfam_window(rng: random.Random, target_len: int) -> str:
+    """Return a contiguous target_len-bp window from a family-BALANCED
+    draw of the bacterial Rfam pool.
+
+    Two-step sampling: (1) pick family uniformly at random; (2) pick a
+    sequence within that family that is ≥ target_len bp. Prevents the
+    dominant family (RF00174, ~50% of the flat pool) from monopolizing
+    training and biasing the model toward one family's sequence
+    features. Consumes a bounded number of rng draws (~3 max).
+    """
+    _load_rfam_pool()   # populates _RFAM_POOL_BY_FAMILY
+    fam = rng.choice(_RFAM_FAMILIES)
+    fam_seqs = _RFAM_POOL_BY_FAMILY[fam]
+    ok = [s for s in fam_seqs if len(s) >= target_len]
+    if not ok:
+        # Fallback: some families' longest seq may be < target_len.
+        # Try the next family in a deterministic-rng way to keep
+        # alignment stable. In practice at target_len ≤ 84, every family
+        # here has sequences long enough (min family max_len is ~156).
+        for alt in _RFAM_FAMILIES:
+            if alt == fam:
+                continue
+            alt_seqs = _RFAM_POOL_BY_FAMILY[alt]
+            ok = [s for s in alt_seqs if len(s) >= target_len]
+            if ok:
+                fam = alt
+                break
+        if not ok:
+            raise RuntimeError(
+                f"No Rfam family has a sequence ≥ {target_len} bp "
+                f"(max seen across all families = "
+                f"{max(max(len(s) for s in xs) for xs in _RFAM_POOL_BY_FAMILY.values())}).")
+    seq = rng.choice(ok)
+    start = rng.randint(0, len(seq) - target_len)
+    return seq[start:start + target_len]
+
+
 # ---- constants ----
 FLANK_LEN = 120
 JUNCTION_POS = 60          # target center reference point
 TARGET_L_MIN = 9
 TARGET_L_MAX = 14
-CENTER_OFFSET_MIN = -40    # target center offset from junction (min)
-CENTER_OFFSET_MAX =  40    # target center offset from junction (max)
-NC_LEN_MIN = 100     # raised from 80 (2026-09-13): eliminates ~10bp systematic
-NC_LEN_MAX = 250     # lift on `scattered` (which resamples nc_len when
-                     # min_required=90 doesn't fit). U[100,250] still covers
-                     # IS621's 107/193 with margin; kills the label proxy.
+CENTER_OFFSET_MIN = -15    # target center offset from junction (min).
+CENTER_OFFSET_MAX =  15    # V8 (2026-09-23) narrowed from ±40 to ±15 to
+                           # keep the L-mer + left/right conserved regions
+                           # inside the 120-bp flank. Worst-case footprint:
+                           # RNA_CONSERVED_LEN_MAX(=35) + TARGET_L_MAX(=14)
+                           # + RNA_CONSERVED_LEN_MAX(=35) = 84 bp.
+                           # ts ∈ [conserved_left, 120 - L - conserved_right].
+                           # NB: this is a real reduction in inter-bag position
+                           # variability (was U[-40,+40]); trade-off accepted
+                           # to accommodate V8 conserved-region design.
+TARGET_START_JITTER = 2    # v8: per-site jitter around bag-level target
+                           # center, U{-JITTER..+JITTER}. See §8.4 scope
+                           # table in V7_SPEC.md and FROZEN.md entry
+                           # "V8 target_start scope fix" (2026-09-23).
+
+# --- V8 RNA conserved regions (2026-09-23) ---
+# Left + right conserved regions bracketing the guide, encoded into both
+# nc and the site flanks. Represent "conserved sequence around the guide"
+# — the RNA_conserved_region — real biology of most RNA-guided elements
+# has such regions. Length per side drawn independently to avoid
+# symmetry becoming a trivial feature.
+RNA_CONSERVED_LEN_MIN = 15
+RNA_CONSERVED_LEN_MAX = 35
+CONSERVED_MATCH_FRAC_MIN = 0.55   # fraction of conserved-region positions
+CONSERVED_MATCH_FRAC_MAX = 0.75   # matched between flank and bag conserved.
+                                   # Deliberately looser than guide's m/L
+                                   # (~0.73-0.92) because biology of
+                                   # conserved regions is structural/
+                                   # recognition, not direct base-pairing.
+
+NC_LEN_MIN = 120     # V8: raised from 100 (2026-09-23) to fit conserved-
+                     # region+guide footprint (max 84 bp) plus 2×edge_avoid
+                     # (=24 bp) = 108 bp min; 120 gives 12 bp headroom.
+NC_LEN_MAX = 250
 MULTI_REGION_SCORING = "concat_with_N_spacer"
+
+# V8.3 context-cluster mechanism RETIRED 2026-09-27.
+# Flank-side clusters were removed under V8.4 Step 2 (no biological
+# basis; V8.1 flank-scope invariant restored). Nc-side clusters had
+# no signal path without their flank counterparts — a nc-only write
+# doesn't affect m_max unless flank has the same 3bp template to
+# match it — so retiring them too. See V8.4 Step 3 directive.
 
 # MAX_L for nc-edge avoidance AND between-guide gap — must match
 # model/channel_b/constants.MAX_L so no search window can straddle
@@ -73,7 +220,147 @@ _MIN_GUIDE_GAP = _MAX_L      # MAX_L bases between two planted guides in nc
 N_SCATTERED_GUIDES = 3
 
 
-VALID_V7_REAL_NEGATIVE_MODES = ("none", "twin", "partial", "scattered")
+VALID_V7_REAL_NEGATIVE_MODES = ("none", "partial", "scattered",
+                                 "flank_scattered",         # V8 mode 1
+                                 "no_alignment",             # V8 mode 3
+                                 "repeat_flank",             # V8 mode 4
+                                 "tsd_negative")             # V8 mode 5
+                                                             # (2026-09-25)
+# V8.4 (2026-09-27): mode 2 "unstructured_nc_full" REMOVED. At 60 bp
+# scale, dinuc-shuffled Rfam is not distinguishable from real Rfam via
+# any of the 4 structure channels (ch4-7 Cohen's d < 0.05 across all
+# channels, KS < 0.06). Without a channel to detect it, the mode was
+# a noise negative under any construction. Retired in V8.4 rebuild.
+
+# V8.1 invariant exemptions (2026-09-27). Modes that DELIBERATELY violate
+# a bag-level structural invariant. Adding a new negative mode → default
+# behavior is that ALL invariants apply, and if the new mode is meant to
+# violate one it must be added here explicitly. Fails closed.
+#
+# _FLANK_SCOPE_EXEMPT: modes that write to flank OUTSIDE the target
+# window [ts, ts+L). repeat_flank replicates site 0's flank to sites
+# 1..K-1 wholesale with U[0, 0.05] mutation — this is its whole point.
+_FLANK_SCOPE_EXEMPT = frozenset({"repeat_flank"})
+#
+# _TS_SPAN_EXEMPT: modes that intentionally scatter per_site_target_start
+# across the flank instead of using a bag-shared center. flank_scattered
+# is the only such mode.
+_TS_SPAN_EXEMPT = frozenset({"flank_scattered"})
+_TS_SPAN_MAX = 2 * TARGET_START_JITTER   # non-scattered bags: span ≤ 4
+
+
+def _assert_flank_scope(negative_mode: str,
+                          per_site_flank_raw: list[str],
+                          per_site_flank_final: list[str],
+                          per_site_target_start: list[int],
+                          per_site_target_L: list[int]) -> None:
+    """Invariant 1: for all modes not in _FLANK_SCOPE_EXEMPT, the final
+    120-bp flank differs from the raw pool flank ONLY inside the target
+    window [ts, ts+L). Any modification outside that window means a
+    mode is silently reintroducing off-target flank rewriting (like the
+    V8.0 flank-cons bug or the V8.3 flank-cluster experiment, both
+    since retracted). Fails loudly at bag construction time.
+
+    STRICT V8.1 semantics restored 2026-09-27 as part of the V8.4
+    rebuild — the V8.3 widened signature (which accepted a
+    context_clusters kwarg and allowed writes at cluster spans) is
+    deleted. Under V8.4 flanks are 120-bp real bacterial DNA with ONLY
+    the target region [ts, ts+L) mutated toward the bag guide."""
+    if negative_mode in _FLANK_SCOPE_EXEMPT:
+        return
+    for i in range(len(per_site_flank_raw)):
+        raw = per_site_flank_raw[i]
+        final = per_site_flank_final[i]
+        ts = per_site_target_start[i]
+        L = per_site_target_L[i]
+        outside_raw   = raw[:ts]   + raw[ts + L:]
+        outside_final = final[:ts] + final[ts + L:]
+        if outside_raw != outside_final:
+            for j in range(len(outside_raw)):
+                if outside_raw[j] != outside_final[j]:
+                    global_j = j if j < ts else j + L
+                    raise AssertionError(
+                        f"[V8.4 flank-scope invariant] mode={negative_mode} "
+                        f"site={i}: flank modified outside target window "
+                        f"[{ts}, {ts + L}). First diff at pos {global_j}: "
+                        f"raw[{global_j}]={raw[global_j]!r} "
+                        f"final[{global_j}]={final[global_j]!r}. "
+                        f"If this mode intentionally writes off-target, "
+                        f"add it to _FLANK_SCOPE_EXEMPT.")
+            raise AssertionError(
+                f"[V8.4 flank-scope invariant] mode={negative_mode} "
+                f"site={i}: outside-window difference detected but "
+                f"position search failed.")
+
+
+def _assert_ts_span(negative_mode: str,
+                     per_site_target_start: list[int]) -> None:
+    """Invariant 2: for all modes not in _TS_SPAN_EXEMPT, the per-bag
+    target_start span must be ≤ 2 × TARGET_START_JITTER. This catches
+    the pre-V8 scope-drift bug (per-site independent centers over ±40
+    bp instead of a bag-shared center + small jitter)."""
+    if negative_mode in _TS_SPAN_EXEMPT:
+        return
+    if len(per_site_target_start) < 2:
+        return
+    span = max(per_site_target_start) - min(per_site_target_start)
+    if span > _TS_SPAN_MAX:
+        raise AssertionError(
+            f"[V8.1 ts-span invariant] mode={negative_mode}: "
+            f"target_start span {span} > 2×JITTER {_TS_SPAN_MAX}. "
+            f"per_site_target_start={per_site_target_start}. "
+            f"If this mode intentionally scatters ts, add it to "
+            f"_TS_SPAN_EXEMPT.")
+
+# tsd_negative (V8 mode 5, 2026-09-25): DDE-mimicking negative that is
+# ORTHOGONAL to repeat_flank. Per-site flanks are drawn INDEPENDENTLY
+# from the real pool (so flank_bg_identity ≈ 0.26 — this negative
+# won't be caught by the flank_bg channel). Each site's flank has a
+# TSD (target site duplication) sequence inserted at the target_start
+# region. nc plants a mock "insert body" of [TSD + random_middle + TSD]
+# (mimics TIR-TIR annotation of real DDE elements). The bag-level TSD
+# is drawn from one of 6 DDE-family TIR signatures (extracted from
+# the 2026-09-25 DDE audit: IS1/IS3/IS6/IS66/IS256/ISL3 head sequences).
+# K ~ U{7, 8, 9}. Model discrimination path: peak m at flank↔nc TSD
+# match is ~K (7-9) not full L; peak neighbors don't show conserved-
+# region template. If the model can't separate this from positive,
+# adding a "peak_context_conservation" channel becomes justified.
+
+# 6 DDE-family TIR head signatures, from scripts/audit_dde_tsd_visual.py
+# (2026-09-25). First 9 bp of each family's insert body — the model-
+# recognizable "family signature" that appears at every insertion of
+# that element. Used as the TSD source pool for tsd_negative mode.
+DDE_TSD_SIGNATURES: tuple[str, ...] = (
+    "GGTAATGAC",   # IS1
+    "ACTGTACTG",   # IS3
+    "GGCACTGTT",   # IS6
+    "GTAAGCGTA",   # IS66
+    "GAGCCTGTA",   # IS256
+    "GGGTCTTCC",   # ISL3
+)
+# repeat_flank (V8 mode 4, 2026-09-25) added after V8 DDE eval showed
+# real transposon multi-copy elements (DDE families) exhibit near-
+# identical flanks across sites — coherent flank_dev signal that fools
+# the model into scoring them as positive (DDE p50 = 6.65 vs pos 5.02
+# on v8_main/best.pt). This mode plants a designed guide in nc (same
+# as positive) but reuses ONE base flank across all K sites, with
+# per-site mutation rate U[0, 0.05] to cover the "identical to
+# slightly-diverged copies" spectrum. Together with a planned
+# `flank_bg_identity` input channel (per-bag cross-site pairwise flank
+# similarity outside the alignment window), teaches the model to
+# require additional evidence beyond mere flank_dev coherence.
+# unstructured_nc_half was drafted but RETIRED 2026-09-23: (a) the extra
+# bag-level rng.choice draw caused a 4bp nc_len drift vs other modes
+# (label proxy risk); (b) unstructured_nc_full already covers the
+# "no conserved context" negative direction; the half variant added
+# an intermediate difficulty band that wasn't clearly worth its cost
+# in this iteration. May revisit in a later V.
+#
+# twin was in v7-real but REMOVED from V8 (2026-09-23): the "each site
+# has its own independent guide" negative was subsumed by scattered (which
+# reduces cross-site guide coherence via a small candidate set) plus
+# flank_scattered (which breaks position coherence). Twin implementation
+# preserved at git tag `v7-real-frozen` for historical reproduction.
 
 
 # ---- helpers ----
@@ -254,6 +541,12 @@ class V7RealBagRecord:
                                                   # None if site is un-planted (partial)
     per_site_orient: list[str]
     orient_p_same: float
+    # V8.1 diagnostic fields (2026-09-27) — expose bag-level Rfam
+    # bracket templates so audits can verify nc content.
+    left_conserved: str = ""
+    right_conserved: str = ""
+    left_conserved_len: int = 0
+    right_conserved_len: int = 0
 
 
 def build_bag_v7_real(bag_id: str, rng: random.Random,
@@ -285,15 +578,78 @@ def build_bag_v7_real(bag_id: str, rng: random.Random,
     bag_guide_L = sample_target_L(rng)
     bag_guide = sample_bag_guide(rng, bag_guide_L, gc=gc)
 
+    # V8.4 (2026-09-27) — nc bracket regions come from ONE contiguous
+    # window of a real bacterial Rfam ncRNA. Left + right lengths drawn
+    # independently per bag; total window = left_len + L + right_len.
+    # The middle L bp of the window are subsequently overwritten by the
+    # planted guide, but left+right sides of the window are byte-identical
+    # to positions [i, i+left_len) and [i+left_len+L, i+left_len+L+right_len)
+    # of the same source Rfam sequence — so they retain the "these two
+    # segments naturally sit next to each other in a real folded ncRNA"
+    # property (with an L-bp gap where the guide lands). All modes
+    # uniformly: no mode-specific bracket-source selection (V8.2's
+    # dinuc-shuffle for unstructured_nc_full is retired along with the
+    # mode itself). No cluster mechanism (V8.3 flank-side + nc-side
+    # retired in Step 2 + Step 3 respectively).
+    left_conserved_len = rng.randint(RNA_CONSERVED_LEN_MIN, RNA_CONSERVED_LEN_MAX)
+    right_conserved_len = rng.randint(RNA_CONSERVED_LEN_MIN, RNA_CONSERVED_LEN_MAX)
+    _bracket_window_len = left_conserved_len + bag_guide_L + right_conserved_len
+    _rfam_bracket = _sample_rfam_window(rng, _bracket_window_len)
+    left_conserved = _rfam_bracket[:left_conserved_len]
+    right_conserved = _rfam_bracket[left_conserved_len + bag_guide_L:]
+
+    # V8 (2026-09-23) — RNG-alignment fix: draw nc lengths + bases HERE,
+    # BEFORE any mode-specific rng consumption (per-site guides, partial's
+    # is_planted set, conserved-region rewriting). This eliminates the
+    # ~7bp nc_len drift across modes observed in the initial V8 smoke.
+    # nc_len bounds already accommodate the max planted-block footprint
+    # under NC_LEN_MIN=120 (worst-case block = 2·edge + left_max + L_max +
+    # right_max = 24 + 35 + 14 + 35 = 108), so no rejection sampling
+    # needed even for scattered mode (min_required for scattered=90).
+    nc_planted_len = sample_nc_len(rng)
+    nc_noise_len   = sample_nc_len(rng)
+    nc_planted_base = sample_ncrna(rng, nc_planted_len, gc=gc)
+    nc_noise        = sample_ncrna(rng, nc_noise_len,   gc=gc)
+
     # Sample K real flanks + per-site target positions + planted_m
+    # V8 target_start scope fix (2026-09-23): bag-shared target center
+    # + per-site jitter U{-2..+2} → per-bag span ≤ 4. Applied uniformly
+    # to all modes EXCEPT flank_scattered (V8 negative mode 1), which
+    # deliberately restores the pre-V8 per-site independent sampling
+    # to expose scattered flank alignment as a training negative.
+    # bag_center_off is drawn unconditionally so rng consumption for
+    # downstream draws (nc, planted_m, orient) is aligned across modes.
+    # CENTER_OFFSET range narrowed to ±15 (V8) to fit conserved-region
+    # footprint within 120 bp flank.
+    bag_center_off = rng.uniform(CENTER_OFFSET_MIN, CENTER_OFFSET_MAX)
     per_site_flank_raw = []
     per_site_target_start = []
     per_site_target_L = []
     per_site_planted_m = []
+    # target_start range must leave room for left_conserved (before ts) and
+    # right_conserved (after ts+L) inside the 120 bp flank.
+    ts_lo_bound = left_conserved_len
+    ts_hi_bound = FLANK_LEN - bag_guide_L - right_conserved_len
     for _ in range(n_sites):
         fl = real_flank_pool.sample_flank_120(rng, at_max=at_max)
         per_site_flank_raw.append(fl)
-        target_start = sample_target_position(rng, bag_guide_L)
+        # V8 rng-alignment (2026-09-23 fix): both branches draw the SAME
+        # 2 rng samples per site (uniform center_off + randint jitter) so
+        # downstream planted_m sampling is byte-identical across all 6
+        # modes. flank_scattered uses the per-site center_off; other
+        # modes draw it but ignore it (use bag_center_off instead).
+        per_site_center_off = rng.uniform(CENTER_OFFSET_MIN, CENTER_OFFSET_MAX)
+        jitter = rng.randint(-TARGET_START_JITTER, TARGET_START_JITTER)
+        if negative_mode == "flank_scattered":
+            # V8 negative mode 1: per-site independent target center →
+            # scattered target locations across sites in the bag.
+            center = JUNCTION_POS + per_site_center_off + jitter
+        else:
+            # V8 default: bag-shared center + small per-site jitter → per-
+            # bag target-start span ≤ 4 (coherent across sites).
+            center = JUNCTION_POS + bag_center_off + jitter
+        target_start = max(ts_lo_bound, min(ts_hi_bound,
+                                            int(round(center - bag_guide_L / 2))))
         per_site_target_start.append(target_start)
         per_site_target_L.append(bag_guide_L)  # all sites in bag use same L (=bag_guide_L)
         pm = sample_planted_m_uniform(rng, bag_guide_L, m_range=(8, min(11, bag_guide_L)))
@@ -302,20 +658,13 @@ def build_bag_v7_real(bag_id: str, rng: random.Random,
     # Per-site orients
     orients, orient_p_same = sample_site_orients(rng, n_sites)
 
-    # Per-site guide — three modes:
-    #   none / partial: all sites share bag_guide (cross-site coherence)
-    #   twin: each site uses its own independent guide → no shared target
-    #         sequence across flanks; nc holds a DIFFERENT unrelated guide
-    #         so per-site m at any nc position is background-level
+    # Per-site guide:
+    #   none / partial / flank_scattered / unstructured_nc_full:
+    #         all sites share bag_guide (cross-site coherence)
     #   scattered: N_SCATTERED_GUIDES independent guides in nc; each site
     #         randomly assigned to one → partial cross-site coherence
     #         (up to n_sites/N sites at any single nc position)
-    if negative_mode == "twin":
-        # Each site has its own independent guide — breaks cross-site
-        # coherence in the flank rewriting step
-        per_site_guide = [sample_bag_guide(rng, bag_guide_L, gc=gc)
-                             for _ in range(n_sites)]
-    elif negative_mode == "scattered":
+    if negative_mode == "scattered":
         # N_SCATTERED_GUIDES candidates; each site assigned to one uniformly
         scattered_candidates = [sample_bag_guide(rng, bag_guide_L, gc=gc)
                                     for _ in range(N_SCATTERED_GUIDES)]
@@ -323,15 +672,40 @@ def build_bag_v7_real(bag_id: str, rng: random.Random,
     else:
         per_site_guide = [bag_guide] * n_sites
 
-    # Determine which sites are planted (partial only; others = all planted)
+    # Determine which sites are planted:
+    #   partial: 1..n_sites-1 sites planted (random subset)
+    #   no_alignment (V8 mode 3): NO sites planted — flank stays raw
+    #   tsd_negative (V8 mode 5): NO guide-based plant; flank rewriting
+    #     handled by a dedicated per-site TSD-insert block below.
+    #   all others: all sites planted
     if negative_mode == "partial":
-        n_planted = rng.randint(1, max(1, n_sites - 1))
+        # V8.4 (2026-09-27): match fraction must be ≤ 30% so partial
+        # is unambiguously negative (no "good alignment by chance"
+        # where enough sites plant to look positive). n_planted upper
+        # bound = max(1, floor(0.3 * n_sites)):
+        #   K=3: [1, 1]   K=4-5: [1, 1]   K=6: [1, 1]
+        #   K=7: [1, 2]   K=8: [1, 2]
+        # match fraction range 12.5%-33% (K=3 edge case is 33% since
+        # 0.3 × 3 = 0.9 → 1 plant → 1/3 ≈ 33%; accepted for K=3).
+        max_planted = max(1, int(0.3 * n_sites))
+        n_planted = rng.randint(1, max_planted)
         planted_indices = set(rng.sample(range(n_sites), n_planted))
         per_site_is_planted = [i in planted_indices for i in range(n_sites)]
+    elif negative_mode in ("no_alignment", "tsd_negative"):
+        per_site_is_planted = [False] * n_sites
     else:
         per_site_is_planted = [True] * n_sites
 
-    # Rewrite flank at target region for planted sites
+    # V8.1 (2026-09-27): flank-side conserved-region rewriting REMOVED —
+    # was a bug (Durrant WT genomic flanks have no synthetic 15-35bp
+    # cons-template match, so v8_main_v3 suppressed real IS110 flanks
+    # to score 0.24). Conserved regions now live on nc side ONLY (see
+    # nc synthesis branch below). Flank is: [real bacterial DNA] with
+    # only the target region [ts:ts+L] mutated to match bag_guide at
+    # per_site_planted_m fidelity.
+    # ts bounds (ts_lo_bound / ts_hi_bound) intentionally KEPT as-is so
+    # the target_start distribution is byte-identical to V8.0 — cons
+    # removal changes flank *content*, not target position.
     per_site_flank_final = []
     for i in range(n_sites):
         fl = per_site_flank_raw[i]
@@ -344,74 +718,154 @@ def build_bag_v7_real(bag_id: str, rng: random.Random,
         else:
             mut_target = target_seq   # untouched real flank
         fl_final = fl[:ts] + mut_target + fl[ts + L:]
+        # V8.4 (2026-09-27) — flank-side context-cluster writes removed.
+        # Under V8.4 the 120-bp flank is real bacterial DNA with ONLY
+        # the target region mutated. Any bag-level cluster templates
+        # apply on nc only (see nc-synthesis block below), not on flank.
         assert len(fl_final) == FLANK_LEN
         per_site_flank_final.append(fl_final)
 
-    # Synthesize nc regions.
-    # For scattered mode: nc_planted must hold N_SCATTERED_GUIDES guides
-    # spaced by _MIN_GUIDE_GAP with _NC_EDGE_AVOID on both ends. With
-    # L≤14 and N=3 and gap=12 that's 2·12 + 3·14 + 2·12 = 90 bp min.
-    # Rejection-resample nc_planted_len until it fits (usually one draw).
-    if negative_mode == "scattered":
-        min_required = (2 * _NC_EDGE_AVOID
-                              + N_SCATTERED_GUIDES * bag_guide_L
-                              + (N_SCATTERED_GUIDES - 1) * _MIN_GUIDE_GAP)
-        for _ in range(20):
-            nc_planted_len = sample_nc_len(rng)
-            if nc_planted_len >= min_required:
-                break
-        else:
-            # Extremely unlikely — min_required=90 usually, NC_LEN_MAX=250
-            raise RuntimeError(
-                f"[v7-real:scattered] {bag_id}: failed to sample nc_len ≥ "
-                f"{min_required} in 20 tries. NC_LEN_MIN={NC_LEN_MIN} may be too low.")
-    else:
-        nc_planted_len = sample_nc_len(rng)
-    nc_noise_len = sample_nc_len(rng)
-    nc_planted_base = sample_ncrna(rng, nc_planted_len, gc=gc)
-    nc_noise        = sample_ncrna(rng, nc_noise_len,   gc=gc)
+    # V8 mode 4: repeat_flank — AFTER all per-site rewrites, copy site 0's
+    # FINAL flank to sites 1..K-1 with per-site mutation rate U[0, 0.05].
+    # This is done post-rewrite so the target-region and conserved-region
+    # patterns are IDENTICAL across sites (the per-site variance from
+    # per_site_planted_m + per-site match_frac + per-site position picks
+    # would otherwise reduce cross-site flank similarity from ~1.0 to
+    # ~0.7 — which is what the 2026-09-25 first smoke exposed). This
+    # ordering makes the negative match its design intent: near-identical
+    # final flanks (DDE-like), planted-nc plus conserved wrap on nc side
+    # (positive-like) → discriminated only by cross-site flank identity.
+    if negative_mode == "repeat_flank":
+        base_final = per_site_flank_final[0]
+        for i in range(1, n_sites):
+            per_site_rate = rng.uniform(0.0, 0.05)
+            n_mut = int(round(per_site_rate * len(base_final)))
+            if n_mut > 0:
+                positions = rng.sample(range(len(base_final)), n_mut)
+                fl_list = list(base_final)
+                for p in positions:
+                    orig = fl_list[p]
+                    fl_list[p] = rng.choice([b for b in "ACGT" if b != orig])
+                per_site_flank_final[i] = "".join(fl_list)
+            else:
+                per_site_flank_final[i] = base_final
 
-    # Populate nc_planted with the correct guide(s) per negative_mode
-    nc_planted_positions: list[int] = []
+    # V8 mode 5: tsd_negative — INDEPENDENT per-site flanks (like positive)
+    # but each has the bag-level TSD (a DDE-family TIR signature, length
+    # K ~ U{7,8,9}) inserted at target_start. flank_bg_identity ≈ 0.26
+    # (positive-like) so the new channel doesn't fire on this negative.
+    # Nc-side plant handled in the nc-synthesis block below.
+    # Bag-level draws (family + K + bag_tsd) also feed the nc plant.
+    bag_tsd: str | None = None
+    if negative_mode == "tsd_negative":
+        _fam_idx = rng.randint(0, len(DDE_TSD_SIGNATURES) - 1)
+        _K = rng.randint(7, 9)
+        bag_tsd = DDE_TSD_SIGNATURES[_fam_idx][:_K]
+        # Overwrite per_site_flank_final with independent raw flanks that
+        # have the TSD inserted at target_start. V8.4 (2026-09-27): no
+        # flank cluster application — TSD insert stays inside the
+        # target window [ts, ts+K_i) ⊆ [ts, ts+L), so flank-scope
+        # invariant is satisfied without any cluster carve-out.
+        rewritten = []
+        for i in range(n_sites):
+            fl = per_site_flank_raw[i]
+            ts = per_site_target_start[i]
+            K_i = min(_K, FLANK_LEN - ts)
+            fl_new = fl[:ts] + bag_tsd[:K_i] + fl[ts + K_i:]
+            assert len(fl_new) == FLANK_LEN
+            rewritten.append(fl_new)
+        per_site_flank_final = rewritten
+
+    # NC lengths + bases were drawn EARLIER (RNG-alignment fix, V8 2026-
+    # 09-23). Verify the scattered mode's minimum length constraint is
+    # satisfied by the current NC_LEN_MIN — this is a static check now,
+    # not a rejection loop.
     if negative_mode == "scattered":
-        # nc contains the N_SCATTERED_GUIDES candidates each site's flank
-        # was rewritten toward; positions spaced by _MIN_GUIDE_GAP so
-        # window-length search cannot straddle two guides.
+        _min_required_scatter = (2 * _NC_EDGE_AVOID
+                                 + N_SCATTERED_GUIDES * bag_guide_L
+                                 + (N_SCATTERED_GUIDES - 1) * _MIN_GUIDE_GAP)
+        if nc_planted_len < _min_required_scatter:
+            # With NC_LEN_MIN=120 and max scattered requirement=90 this
+            # should never trigger. Kept as a hard fail-fast so any future
+            # constant change gets caught here rather than silently.
+            raise RuntimeError(
+                f"[v7-real:scattered] {bag_id}: nc_planted_len={nc_planted_len} "
+                f"< min_required={_min_required_scatter}. Either raise NC_LEN_MIN "
+                f"or reduce N_SCATTERED_GUIDES / bag_guide_L.")
+
+    # Populate nc_planted with the correct guide(s) per negative_mode.
+    # V8 (2026-09-23): single-guide modes plant the full block
+    #   [left_conserved + middle_guide + right_conserved]
+    # into nc so the whole conserved-region + guide context appears
+    # contiguously in nc. `nc_planted_positions` records the GUIDE's
+    # position (not the block start), keeping it consistent with pre-V8
+    # semantics of "where the guide sits in nc" for training-target y.
+    nc_planted_positions: list[int] = []
+    if negative_mode == "no_alignment":
+        # V8 mode 3: pure random nc, nothing planted. bag_guide/left_conserved/
+        # right_conserved were drawn (bag-level rng-alignment) but discarded.
+        nc_planted = nc_planted_base
+        # nc_planted_positions stays [] — no plant anywhere.
+    elif negative_mode == "tsd_negative":
+        # V8 mode 5: nc plants a mock DDE insert body = TSD + random_middle +
+        # TSD. Middle length ~ U[10, 20]; base composition matches gc target.
+        # This mimics the standard IS annotation ([TIR-INSERT_BODY-TIR]).
+        # No bag_guide, no conserved-region wrapping (both discarded like
+        # unstructured_nc_full).
+        assert bag_tsd is not None
+        _middle_len = rng.randint(10, 20)
+        _middle = _gc_weighted_bases(rng, gc, _middle_len)
+        _insert_body = bag_tsd + _middle + bag_tsd
+        nc_planted, _block_start = plant_guide_in_nc(
+            rng, nc_planted_base, _insert_body, edge_avoid=_NC_EDGE_AVOID)
+        # nc_planted_positions kept empty → y = 0 for all sites (negative
+        # label; the "insert body" is diagnostic only, not a training target).
+    elif negative_mode == "scattered":
+        # scattered keeps its 3-guide layout without conserved-region
+        # wrapping (would exceed NC_LEN_MAX). Known asymmetry vs other
+        # modes on nc composition — noted in spec §8.4.1.
         nc_planted, nc_planted_positions = plant_multiple_guides_in_nc(
             rng, nc_planted_base, scattered_candidates,
             edge_avoid=_NC_EDGE_AVOID, min_gap=_MIN_GUIDE_GAP)
-    elif negative_mode == "twin":
-        # Each site's flank was rewritten toward its OWN per_site_guide[i];
-        # nc holds ONE unrelated guide → no nc position matches any site's
-        # rewritten target region → per-site m at any nc pos is background.
-        # For random-ACGT sampling, expected Hamming distance to any of
-        # the K per-site guides is 3L/4 ≈ 8-10 — already "unrelated" without
-        # explicit rejection sampling.
-        g_unrelated = sample_bag_guide(rng, bag_guide_L, gc=gc)
-        nc_planted, planted_pos = plant_guide_in_nc(
-            rng, nc_planted_base, g_unrelated, edge_avoid=_NC_EDGE_AVOID)
-        nc_planted_positions = [planted_pos]
     else:
-        # positive OR partial: nc contains bag_guide (which every site was
-        # rewritten toward). All sites' rewritten targets align at the
-        # single nc position holding bag_guide → cross-site coherence.
-        nc_planted, planted_pos = plant_guide_in_nc(
-            rng, nc_planted_base, bag_guide, edge_avoid=_NC_EDGE_AVOID)
+        # V8.4 (2026-09-27): positive OR partial OR repeat_flank OR
+        # flank_scattered — plant
+        # `[left_rfam_bracket + bag_guide + right_rfam_bracket]` as ONE
+        # contiguous block into the random nc_planted_base. Left+right
+        # bracket bytes are BOTH slices of the SAME Rfam window with an
+        # L-bp gap in the middle (where the guide goes), so together
+        # with the guide they occupy the same physical contiguous span
+        # they'd have in the source Rfam sequence.
+        full_planted_seq = left_conserved + bag_guide + right_conserved
+        nc_planted, block_start = plant_guide_in_nc(
+            rng, nc_planted_base, full_planted_seq, edge_avoid=_NC_EDGE_AVOID)
+        planted_pos = block_start + left_conserved_len   # guide's own pos
         nc_planted_positions = [planted_pos]
 
     # Build per-site nc_planted_pos mapping:
     #   none / partial: all planted sites → position 0 of nc_planted_positions
     #                   (the single bag_guide position); un-planted → None
-    #   twin: sites' guides don't appear in nc → per_site_nc_planted_pos = None
-    #         (marks "no site-matching position in nc")
     #   scattered: each site's guide is one of scattered_candidates; its
     #              nc position is nc_planted_positions[index_of_that_candidate]
+    #   flank_scattered (V8 mode 1): bag_guide IS in nc at nc_planted_positions[0],
+    #         but the training label is y=zeros so the loss teaches the model
+    #         to reject scattered flank patterns despite the nc-side match.
+    #         Semantic vs training-signal split is intentional; see
+    #         V7_SPEC.md §8.6 (to be added).
+    #   unstructured_nc_full: nc holds bag_guide but WITHOUT conserved-region
+    #         wrapping → no cross-site conserved context around the guide;
+    #         y=zeros so the model must reject.
     per_site_nc_planted_pos: list[int | None] = []
     if negative_mode == "none" or negative_mode == "partial":
         for i in range(n_sites):
             per_site_nc_planted_pos.append(
                 nc_planted_positions[0] if per_site_is_planted[i] else None)
-    elif negative_mode == "twin":
+    elif negative_mode in ("flank_scattered",
+                            "no_alignment", "repeat_flank", "tsd_negative"):
+        # y = zeros — all these modes plant like positive on nc/flank but
+        # are LABELED negative. Model must reject on some other feature
+        # (position scatter, missing plant, repeated flank across sites,
+        # or short-TSD-only plant).
         per_site_nc_planted_pos = [None] * n_sites
     elif negative_mode == "scattered":
         # per_site_guide[i] is one of scattered_candidates — find which
@@ -424,6 +878,13 @@ def build_bag_v7_real(bag_id: str, rng: random.Random,
     order = [0, 1]
     rng.shuffle(order)
     active_index_in_output = order.index(0)   # 0 = nc_planted, 1 = nc_noise
+
+    # V8.1 structural invariants (2026-09-27). These run on EVERY bag,
+    # fail loudly. They are cheap (string compare + arithmetic).
+    _assert_flank_scope(negative_mode, per_site_flank_raw,
+                          per_site_flank_final,
+                          per_site_target_start, per_site_target_L)
+    _assert_ts_span(negative_mode, per_site_target_start)
 
     return V7RealBagRecord(
         bag_id=bag_id,
@@ -445,7 +906,156 @@ def build_bag_v7_real(bag_id: str, rng: random.Random,
         per_site_nc_planted_pos=per_site_nc_planted_pos,
         per_site_orient=orients,
         orient_p_same=orient_p_same,
+        left_conserved=left_conserved,
+        right_conserved=right_conserved,
+        left_conserved_len=left_conserved_len,
+        right_conserved_len=right_conserved_len,
     )
+
+
+# V8.1 rng-alignment validator (2026-09-27). Cross-mode invariant:
+# for a fixed seed, all bag-level draws (before mode-specific rng
+# consumption diverges) must be byte-identical across all 8 modes.
+# This catches the "rng consumption drift" class of bug that has bitten
+# twice already (nc_len drift ~7bp before the V8 fix, and any future
+# addition/removal of an rng call inside a mode-specific branch that
+# is not counter-balanced across the other branches).
+#
+# Fields compared across modes for each seed:
+#   ALWAYS (bag-level, drawn before any mode-specific branch):
+#     bag_guide_L, bag_guide, left_conserved_len, right_conserved_len,
+#     left_conserved, right_conserved, nc_planted length, nc_noise
+#     length, first 32 chars of nc_planted (pre-plant), first 32 chars
+#     of nc_noise.
+#   NON-SCATTERED modes only (share bag_center_off):
+#     per_site_target_start (list).
+#
+# NOT compared (mode-specific by construction):
+#   per_site_flank_final (rewrite differs across modes), nc_planted
+#   (plant content differs), per_site_planted_m (rng consumed after
+#   per_site_flank_raw sampling, which itself consumes different rng),
+#   orient list.
+
+def _bag_signature_shared(bag: "V7RealBagRecord") -> tuple:
+    """Bag-level draws that are made BEFORE any mode-specific rng
+    branch (bag_guide, cons lens, nc lengths + bases, orient list).
+    Under per-bag seeding, these must be byte-identical across every
+    mode for a given per-bag seed.
+
+    V8.2 note: left_conserved / right_conserved are NOT in the shared
+    signature because their content depends on negative_mode
+    (unstructured_nc_full → random alt, others → Rfam window).
+    Byte-identical bracket LENGTHS still hold because they are drawn
+    upstream; and the two SOURCE candidates (rfam_window,
+    random_alt) are BOTH drawn in every mode with aligned rng —
+    only the selection differs. See _assert_bracket_alignment for the
+    dedicated check on those two candidates."""
+    return (
+        bag.bag_guide_L,
+        bag.bag_guide,
+        bag.left_conserved_len,
+        bag.right_conserved_len,
+        len(bag.nc_planted),
+        len(bag.nc_noise),
+        # per_site_orient is drawn from `sample_site_orients` which runs
+        # BEFORE the scattered/partial/tsd_negative branches, so it must
+        # align across all modes under per-bag seeding.
+        tuple(bag.per_site_orient),
+        bag.orient_p_same,
+    )
+
+
+def validate_rng_alignment(seed: int = 0, n_bags: int = 100,
+                              real_flank_pool: "RealFlankPool | None" = None,
+                              modes: tuple[str, ...] = VALID_V7_REAL_NEGATIVE_MODES,
+                              ) -> None:
+    """V8.1 Invariant 3 (2026-09-27) — cross-mode rng consumption alignment.
+
+    Uses PER-BAG seeding, exactly matching run_generator.py's contract:
+    ``master_rng = Random(seed); per_bag_seeds = [master_rng.randrange(...) for _ in range(n_bags)]``.
+    For each per-bag seed, generates one bag under EVERY mode and asserts
+    that bag-level draws (before any mode-specific branch diverges) are
+    byte-identical across every mode. Non-scattered modes additionally
+    must produce identical `per_site_target_start` (bag-shared center +
+    integer jitter is a pure function of the bag-shared rng state).
+
+    A byte-mismatch on _bag_signature_shared means some mode-specific
+    branch consumed rng BEFORE the shared draws it should have preceded
+    (bug), or added a new branch that got its rng ordering wrong
+    (regression). A per_site_target_start mismatch on two non-scattered
+    modes means a mode-specific extra draw was inserted between
+    bag_center_off and the ts loop.
+
+    Raises AssertionError on the first misalignment. O(n_bags · |modes|)
+    time; ~seconds at n_bags=100.
+    """
+    if real_flank_pool is None:
+        real_flank_pool = RealFlankPool.load_default()
+
+    master_rng = random.Random(seed)
+    per_bag_seeds = [master_rng.randrange(0, 2**31 - 1)
+                        for _ in range(n_bags)]
+    reference_mode = modes[0]
+
+    for i, s in enumerate(per_bag_seeds):
+        ref_bag = build_bag_v7_real(
+            bag_id=f"__rng_align_ref_{i:06d}",
+            rng=random.Random(s), real_flank_pool=real_flank_pool,
+            negative_mode=reference_mode,
+        )
+        if ref_bag is None:
+            raise AssertionError(
+                f"[V8.1 rng-alignment] reference mode={reference_mode} "
+                f"bag={i}: build_bag_v7_real returned None.")
+        rs = _bag_signature_shared(ref_bag)
+
+        for mode in modes[1:]:
+            other = build_bag_v7_real(
+                bag_id=f"__rng_align_{mode}_{i:06d}",
+                rng=random.Random(s), real_flank_pool=real_flank_pool,
+                negative_mode=mode,
+            )
+            if other is None:
+                raise AssertionError(
+                    f"[V8.1 rng-alignment] mode={mode} bag={i}: "
+                    f"build_bag_v7_real returned None.")
+            os_ = _bag_signature_shared(other)
+            if rs != os_:
+                # Find first field that differs for a compact error.
+                field_names = ("bag_guide_L", "bag_guide",
+                                "left_conserved_len", "right_conserved_len",
+                                "len(nc_planted)", "len(nc_noise)",
+                                "per_site_orient", "orient_p_same")
+                diffs = [(n, a, b) for n, a, b in zip(field_names, rs, os_)
+                              if a != b]
+                raise AssertionError(
+                    f"[V8.1 rng-alignment] bag-shared signature mismatch: "
+                    f"seed={seed} per_bag_seed={s} bag={i} "
+                    f"ref_mode={reference_mode} other_mode={mode}\n"
+                    f"  first mismatched fields: {diffs[:3]}")
+            if (reference_mode not in _TS_SPAN_EXEMPT
+                    and mode not in _TS_SPAN_EXEMPT):
+                if ref_bag.per_site_target_start != other.per_site_target_start:
+                    raise AssertionError(
+                        f"[V8.1 rng-alignment] per_site_target_start "
+                        f"mismatch: seed={seed} per_bag_seed={s} bag={i} "
+                        f"ref_mode={reference_mode} other_mode={mode}\n"
+                        f"  reference: {ref_bag.per_site_target_start}\n"
+                        f"  other:     {other.per_site_target_start}")
+            # V8.4 bracket alignment: EVERY mode now uses the same Rfam
+            # window (unstructured_nc_full and its shuffle branch are
+            # retired), so `left_conserved` and `right_conserved` must
+            # be byte-identical across every mode for a given per-bag
+            # seed.
+            if (ref_bag.left_conserved != other.left_conserved
+                    or ref_bag.right_conserved != other.right_conserved):
+                raise AssertionError(
+                    f"[V8.4 bracket-alignment] Rfam bracket content "
+                    f"mismatch across modes: "
+                    f"seed={seed} per_bag_seed={s} bag={i} "
+                    f"ref_mode={reference_mode} other_mode={mode}\n"
+                    f"  reference L: {ref_bag.left_conserved[:24]!r}\n"
+                    f"  other     L: {other.left_conserved[:24]!r}")
 
 
 def v7_real_to_jsonl_records(bag: V7RealBagRecord) -> list[dict]:
@@ -537,16 +1147,25 @@ def v7_real_to_jsonl_records(bag: V7RealBagRecord) -> list[dict]:
             "generator_metadata": {
                 "data_source":                  "v7_real",
                 "build_date":                    "runtime",
-                "generator_version_or_commit":   "v7_real_2026-09-13",
+                "generator_version_or_commit":   "v7_real_2026-09-23_v8",
                 "flank_pool_source":             "50-bacterial-genome pool (NCBI RefSeq)",
                 "nc_multi_region_scoring":       MULTI_REGION_SCORING,
                 "reversed_flow":                 True,
+                # V8 (2026-09-23) — coordinate convention serialized WITH
+                # the record. Previously the loader derived spacer_len from
+                # its own MAX_L constant, and when MAX_L changed (v7-real
+                # 12 → V8 14) old corpora ended up with a 2-bp shift in
+                # `guide_span_in_active_noncoding` at active_index=1.
+                # Loader MUST read these; do not derive from load-time
+                # MAX_L. See FROZEN "coord convention serialized with
+                # corpus" rule.
+                "concat_spacer_len":             _MAX_L - 1,
+                "max_l_at_generation":           _MAX_L,
                 # nc positions of ALL guides planted in nc_planted (in the
-                # active noncoding region). Purely diagnostic — twin has
-                # one unrelated guide; scattered has N_SCATTERED_GUIDES; none
-                # and partial have one. `planted_start` (per-site) is None
-                # for twin because no site's OWN guide is in nc; this
-                # field lets diagnostics still locate the planted guide.
+                # active noncoding region). Purely diagnostic —
+                # scattered has N_SCATTERED_GUIDES; none / partial have one;
+                # flank_scattered / unstructured_nc_full / no_alignment
+                # per_site_nc_planted_pos is None so no site-level y placed.
                 "nc_planted_positions":          list(bag.nc_planted_positions),
             },
         }

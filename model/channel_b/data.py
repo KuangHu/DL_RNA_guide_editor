@@ -49,23 +49,84 @@ from .constants import (
     INPUT_TENSOR_LABEL_WHITELIST, ARCH_ALLOWED_KEYS, TRAIN_ONLY_LABEL_KEYS,
     TARGET_ONLY_LABEL_KEYS,
     FLANK_DEV_SCALE, CHANNEL_SCALES,
+    FLANK_BG_EXCL_LO, FLANK_BG_EXCL_HI,
 )
 
-# The multi-region concat spacer must be at least `max(Ls) - 1` N's so that no
-# length-L window with L in Ls can span both real regions (proof: a window of
-# length L can cover 1 left-base + s spacer + 1 right-base ONLY IF
-# L >= s + 2; so with spacer_len = max(Ls) - 1, need L >= max(Ls) + 1 to
-# cross, impossible for L in Ls). If Ls ever changes without MAX_L tracking,
-# this assert fires at import time — catches the "Ls extended but spacer
-# formula stale" class of bug the user flagged 2026-09-13.
-_MULTI_REGION_SPACER_LEN = MAX_L - 1
+# Schema-key: any change to CHANNELS list (add/remove/reorder) → new
+# hash → new cache subdirectory → old cache files can never be silently
+# read under mismatched shape. Same defense class as source_hash but
+# scoped to the tensor SHAPE/LAYOUT contract. See feedback-cache-
+# content-key: 2026-09-12 v7-training incident where 160k v6r2 tensors
+# were consumed under v7 labels because the cache path collided.
+import hashlib as _hashlib
+_SCHEMA_KEY_LONG = _hashlib.sha1(
+    ("|".join(CHANNELS) + f"|N={N_CHANNELS}").encode()
+).hexdigest()
+SCHEMA_KEY: str = _SCHEMA_KEY_LONG[:8]
+
+# Multi-region concat spacer.
+#
+# V8 (2026-09-23) revision: spacer_len is NOW READ FROM THE RECORD
+# (`generator_metadata.concat_spacer_len`), NOT derived from MAX_L. The
+# per-load fallback MAX_L-1 is retained ONLY for legacy records that
+# lack the field (v7-real corpora before 2026-09-23). New corpora carry
+# `concat_spacer_len` in every record and the loader uses it verbatim.
+#
+# Why: bag_v7_real.py at generation time used `_MAX_L - 1` for the concat
+# offset baked into `guide_span_in_active_noncoding`. When MAX_L changed
+# (12 → 14 at V8), old corpora ended up with a 2-bp shift and the loader
+# silently placed y at the wrong position for ~50% of positive bags
+# (active_index=1). Serializing the convention with the corpus eliminates
+# this class of drift. See FROZEN "coord convention serialized with corpus".
+#
+# The FALLBACK constant below is used only when `concat_spacer_len` is
+# absent from the record (pre-V8 corpora), preserving backward-compat.
+_MULTI_REGION_SPACER_LEN_FALLBACK = MAX_L - 1
 assert MAX_L == max(Ls), (
-    f"MAX_L ({MAX_L}) != max(Ls) ({max(Ls)}); spacer formula "
-    f"(MAX_L - 1) is wrong for the current Ls. Fix constants.py or spacer.")
-assert max(Ls) < _MULTI_REGION_SPACER_LEN + 2, (
-    f"spacer_len ({_MULTI_REGION_SPACER_LEN}) < max(Ls) ({max(Ls)}) - 1; "
-    f"a length-max(Ls) window can span both real regions. Increase spacer "
-    f"to at least max(Ls) - 1.")
+    f"MAX_L ({MAX_L}) != max(Ls) ({max(Ls)}); spacer fallback formula "
+    f"(MAX_L - 1) is wrong for the current Ls. Fix constants.py.")
+
+
+def _compute_flank_bg_identity(flanks: list[str]) -> float:
+    """Mean pairwise Hamming similarity across a bag's per-site flanks,
+    computed on flank[:FLANK_BG_EXCL_LO] + flank[FLANK_BG_EXCL_HI:] (the
+    positions upstream/downstream of the target-mutation + conserved-
+    region rewrite envelope). Returns a scalar in [0, 1].
+
+    A bag with K < 2 sites has no pair to compare; returns 0.0 (neutral —
+    matches the default zero fill for padded sites in the tensor).
+    """
+    if len(flanks) < 2:
+        return 0.0
+    # background window = concatenation of prefix + suffix
+    def _bg(f: str) -> np.ndarray:
+        return np.frombuffer(
+            (f[:FLANK_BG_EXCL_LO] + f[FLANK_BG_EXCL_HI:]).encode("ascii"),
+            dtype=np.uint8)
+    bgs = [_bg(f) for f in flanks]
+    n = len(bgs)
+    total = 0.0; cnt = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            m = min(len(bgs[i]), len(bgs[j]))
+            if m == 0:
+                continue
+            total += float((bgs[i][:m] == bgs[j][:m]).mean())
+            cnt += 1
+    return total / cnt if cnt else 0.0
+
+
+def _read_concat_spacer_len(labels_first: dict, generator_metadata: dict) -> int:
+    """Return concat_spacer_len for the current bag.
+
+    Priority: `generator_metadata.concat_spacer_len` (V8+, authoritative)
+    → fallback to `MAX_L - 1` (v7-real legacy). Legacy path emits a
+    warning-style note so downstream analysis can spot mixed corpora.
+    """
+    v = generator_metadata.get("concat_spacer_len") if generator_metadata else None
+    if v is not None:
+        return int(v)
+    return _MULTI_REGION_SPACER_LEN_FALLBACK
 
 # Per-channel divisor as a (N_CHANNELS,) array, ordered to match CHANNELS.
 _CHANNEL_DIVISOR = np.array([CHANNEL_SCALES[c] for c in CHANNELS], dtype=np.float32)
@@ -243,8 +304,171 @@ class ChannelBDataset(Dataset):
         if preload_mt:
             self._ensure_mt()
 
+        # V8 (2026-09-23): startup coord-consistency check. Verify that
+        # canonical_nc[p*:p*+L] == guide_dna for a sample of planted
+        # bags. Catches any coordinate-convention drift between
+        # generator and loader (this bug class already cost half a
+        # training run when MAX_L was widened silently).
+        self._verify_pstar_matches_guide(n_check=10)
+
+        # V8 (2026-09-25): flank_bg_identity presence + regime check.
+        # For a sample of bags: verify the flank_bg_identity value the
+        # loader will feed to the tensor is in the expected regime per
+        # negative_mode (positive ≈ 0.26, repeat_flank ≈ 0.96, others
+        # anywhere in between). Catches (a) the channel wired to a
+        # constant, (b) window constants drifted from generator constants
+        # so the "excluded" range no longer covers the rewrite envelope.
+        self._verify_flank_bg_identity_regime(n_check=10)
+
     def __len__(self) -> int:
         return len(self._bag_index)
+
+    def _verify_pstar_matches_guide(self, n_check: int = 10) -> None:
+        """For up to n_check planted bags, load canonical_nc via the SAME
+        multi-region concat path as the model, index at p*, and confirm
+        the slice equals guide_dna. Fails loud on any mismatch — that
+        means the loader's spacer_len does not agree with the generator's,
+        and the training y target is being placed at the wrong position.
+        """
+        n_ok = 0
+        n_seen = 0
+        for bag_id, _off, _ncl, _lab in self._bag_index:
+            if n_ok >= n_check:
+                break
+            sites = self._sites_by_bag.get(bag_id, [])
+            if not sites:
+                continue
+            first = sites[0]
+            lab = first["labels"]
+            span = lab.get("guide_span_in_active_noncoding")
+            guide = lab.get("guide_dna")
+            L = lab.get("guide_length")
+            if not span or not guide or L is None:
+                continue   # negative-mode with no plant; skip
+            n_seen += 1
+            regions = first["inputs"]["noncoding_regions"]
+            if len(regions) == 1:
+                canonical_nc = regions[0]
+            else:
+                spacer_len = _read_concat_spacer_len(
+                    labels_first=lab,
+                    generator_metadata=first.get("generator_metadata", {}),
+                )
+                canonical_nc = ("N" * spacer_len).join(regions)
+            p_star = int(span[0])
+            slice_ = canonical_nc[p_star:p_star + int(L)]
+            if slice_ != guide:
+                # scan for guide within ±40 of p* to give a diagnostic offset
+                lo = max(0, p_star - 40)
+                hi = min(len(canonical_nc) - int(L) + 1, p_star + 41)
+                hits = [j for j in range(lo, hi) if canonical_nc[j:j + int(L)] == guide]
+                aidx = lab.get("active_noncoding_index")
+                gm = first.get("generator_metadata", {})
+                raise RuntimeError(
+                    f"[ChannelBDataset] startup coord-check FAILED for {bag_id}: "
+                    f"canonical_nc[p*={p_star}:p*+L={L}] = {slice_!r} != "
+                    f"guide_dna = {guide!r}. "
+                    f"active_noncoding_index={aidx}. "
+                    f"generator_metadata.concat_spacer_len="
+                    f"{gm.get('concat_spacer_len')!r}, "
+                    f"max_l_at_generation={gm.get('max_l_at_generation')!r}. "
+                    f"Guide found in concat at positions {hits} (offsets "
+                    f"from p*: {[h - p_star for h in hits]}). "
+                    f"This means the generator's coord convention does NOT "
+                    f"match the loader's — regenerate the corpus or fix "
+                    f"the loader's spacer_len derivation."
+                )
+            n_ok += 1
+        if n_ok == 0:
+            # Every bag we checked was negative-mode with no plant. That
+            # can happen for pure-negative corpora; log and continue.
+            print(f"[ChannelBDataset] startup coord-check: no planted bags "
+                  f"in first {n_seen} scanned; skipping.", flush=True)
+        else:
+            print(f"[ChannelBDataset] startup coord-check: "
+                  f"{n_ok}/{n_check} planted bags OK "
+                  f"(canonical_nc[p*:p*+L] == guide_dna)", flush=True)
+
+    def _verify_flank_bg_identity_regime(self, n_check: int = 10) -> None:
+        """Verify the flank_bg_identity value the tensor will carry falls
+        into the expected regime per negative_mode. This is a schema
+        check — it catches the same class of bug as the p*/guide check
+        but for the new channel: the value the tensor ships to the
+        model must actually reflect cross-site flank identity, not a
+        constant placeholder or a stale scalar.
+
+        Regime bands (bag_v7_real.py current constants, 2026-09-25):
+            positive (none):   [0.15, 0.40]  (real bacterial baseline)
+            repeat_flank:       [0.85, 1.00]  (near-identical)
+            others:             anywhere in between
+
+        Fires if fewer than half of the sampled bags satisfy their
+        mode's band. Silent tolerance for a couple outliers (real
+        bacterial genomes have GC-rich patches that spike similarity).
+        """
+        bands = {
+            "none":         (0.15, 0.40),
+            "repeat_flank": (0.85, 1.00),
+        }
+        n_seen = 0
+        n_in_band = 0
+        offenders = []
+        mode_seen: dict[str, int] = {}
+        for bag_id, _off, _ncl, _lab in self._bag_index:
+            if n_seen >= n_check:
+                break
+            # The band check validates the SYNTH generator's flank
+            # construction. Real-data corpora (DDE families, Durrant WT,
+            # candidate discovery outputs) legitimately violate the
+            # positive/repeat_flank bands because their flank structure
+            # is set by biology, not by our generator constants. Scope
+            # the check to bags whose id starts with `v8_` (synth) or
+            # `v7real_` (legacy synth).
+            if not (bag_id.startswith("v8_") or bag_id.startswith("v7real_")):
+                continue
+            sites = self._sites_by_bag.get(bag_id, [])
+            if len(sites) < 2:
+                continue
+            mode = sites[0]["labels"].get("negative_mode", "none")
+            band = bands.get(mode)
+            if band is None:
+                # mode without a strict expected band; skip (partial /
+                # scattered / flank_scattered / unstructured_nc_full /
+                # no_alignment all draw from real pool per-site so land
+                # ~0.26-0.30 but don't need a band-check gate here)
+                continue
+            n_seen += 1
+            mode_seen[mode] = mode_seen.get(mode, 0) + 1
+            fbi = _compute_flank_bg_identity(
+                [s["inputs"]["flank"] for s in sites])
+            in_band = band[0] <= fbi <= band[1]
+            if in_band:
+                n_in_band += 1
+            else:
+                offenders.append((bag_id, mode, fbi, band))
+        if n_seen == 0:
+            print(f"[ChannelBDataset] startup flank_bg_identity check: "
+                  f"no positive/repeat_flank bags to gate; skipping.",
+                  flush=True)
+            return
+        # tolerate 1 offender out of n_seen ≤ 10
+        max_offenders = max(1, n_seen // 5)
+        if len(offenders) > max_offenders:
+            msg = (f"[ChannelBDataset] startup flank_bg_identity check "
+                   f"FAILED: {len(offenders)}/{n_seen} bags outside band "
+                   f"(mode-band map: {bands}).\n"
+                   f"  mode_seen={mode_seen}\n")
+            for bid, m, v, b in offenders[:5]:
+                msg += f"  {bid}  mode={m}  flank_bg_identity={v:.3f}  expected {b}\n"
+            msg += (f"  This means either (a) the tensor's flank_bg_identity "
+                    f"channel is not being computed correctly, or (b) the "
+                    f"generator's flank-construction constants (CENTER_OFFSET, "
+                    f"RNA_CONSERVED_LEN_MAX, JUNCTION_POS) drifted from the "
+                    f"loader's FLANK_BG_EXCL_LO/HI window. Check both.")
+            raise RuntimeError(msg)
+        print(f"[ChannelBDataset] startup flank_bg_identity check: "
+              f"{n_in_band}/{n_seen} bags in-band  (mode_seen={mode_seen})",
+              flush=True)
 
     def _ensure_mt(self):
         if self._mt is None:
@@ -266,12 +490,15 @@ class ChannelBDataset(Dataset):
     def _cache_path(self, bag_id: str) -> Path | None:
         if self.cache_dir is None:
             return None
-        # Path-based separation: cache_dir / <8-char sha1 of jsonl path> / <bag_id>.pt
-        # Different JSONL → different subdir → automatic miss → recompute.
-        # No shared-name collision is possible even if two different
-        # corpora happen to use the same top-level cache_dir root and the
-        # same bag_id namespace (as v7 vs v6r2 both use `bag_XXXXXX`).
-        sub = self.cache_dir / self._source_hash()
+        # Path-based separation:
+        #   cache_dir / <source_hash> / schema=<SCHEMA_KEY> / <bag_id>.pt
+        # source_hash separates two different JSONLs; SCHEMA_KEY separates
+        # different tensor shapes (channel add/remove/reorder → different
+        # dir → automatic miss). Together they prevent any silent cross-
+        # read even if channels change and cache_dir stays the same.
+        # See feedback-cache-content-key (2026-09-12 v7 incident) and
+        # 2026-09-25 flank_bg_identity channel addition (N_CHANNELS 19→20).
+        sub = self.cache_dir / self._source_hash() / f"schema={SCHEMA_KEY}"
         sub.mkdir(parents=True, exist_ok=True)
         return sub / f"{bag_id}.pt"
 
@@ -295,6 +522,13 @@ class ChannelBDataset(Dataset):
         h.update(str(self.jsonl_path.resolve()).encode())
         h.update(b"|")
         h.update(bag_id.encode())
+        h.update(b"|")
+        # Schema hash — layered on top of source+bag hash so a schema
+        # change (channel add/remove/reorder) also produces a distinct
+        # content key. Together with the SCHEMA_KEY in _cache_path, this
+        # makes a stale-shape cache read impossible (path miss OR content
+        # mismatch raises loudly at __getitem__).
+        h.update(SCHEMA_KEY.encode())
         h.update(b"|")
         # Hash the JSON of each site record deterministically (sort_keys)
         for s in sites:
@@ -413,7 +647,13 @@ class ChannelBDataset(Dataset):
                     f"another policy, implement it explicitly, do NOT silently "
                     f"fall back to a default."
                 )
-            spacer = "N" * _MULTI_REGION_SPACER_LEN
+            # V8 (2026-09-23): read spacer_len from record, not from
+            # loader's MAX_L constant. See _read_concat_spacer_len docstring.
+            spacer_len = _read_concat_spacer_len(
+                labels_first=first["labels"],
+                generator_metadata=first.get("generator_metadata", {}),
+            )
+            spacer = "N" * spacer_len
             parts = []
             region_boundaries = []
             cursor = 0
@@ -515,31 +755,54 @@ class ChannelBDataset(Dataset):
         bag_median = np.median(argmax_per_site, axis=0, keepdims=True)  # (1, nc_len_eff, len(Ls))
         flank_dev = (argmax_per_site - bag_median) / FLANK_DEV_SCALE
 
-        # 5) build the 15-channel tensor
+        # 4b) flank_bg_identity — bag-level scalar broadcast to all
+        # (site, position) cells. Mean pairwise Hamming similarity across
+        # sites' flanks, EXCLUDING flank[FLANK_BG_EXCL_LO:FLANK_BG_EXCL_HI]
+        # (covers target-mutation + conserved-region rewrite envelope).
+        # Positive bags ≈ 0.26 (real bacterial baseline). repeat_flank
+        # bags ≈ 0.96. See FROZEN "V8 flank_bg_identity channel" for the
+        # window derivation + validation numbers.
+        flank_bg_identity = _compute_flank_bg_identity(
+            [s["inputs"]["flank"] for s in sites[:n_sites_real]])
+
+        # 5) build the N_CHANNELS tensor. Layout (V8, N_CHANNELS=20):
+        #     [0 : len(Ls))                             — m_max per L
+        #     [len(Ls) : len(Ls)+4)                     — 4 structure channels
+        #     [len(Ls)+4]                               — structure_valid
+        #     [len(Ls)+5 : 2*len(Ls)+5)                 — flank_dev per L
+        #     [2*len(Ls)+5 : 2*len(Ls)+7)               — orient_fwd, orient_rc
+        #     [2*len(Ls)+7]                             — flank_bg_identity
+        # For v7-real (len(Ls)=4) → offsets match the frozen 0..14 layout;
+        # for V8 (len(Ls)=6) → offsets shift automatically.
+        nL = len(Ls)
+        M_START = 0                    # m_max block start
+        S_START = nL                   # structure block start
+        SV_IDX  = nL + 4               # structure_valid index
+        F_START = nL + 5               # flank_dev block start
+        O_START = 2 * nL + 5           # orient block start
+        BG_IDX  = 2 * nL + 7           # flank_bg_identity index (V8 mode 4)
         x = np.zeros((MAX_N_SITES, nc_len_eff, N_CHANNELS), dtype=np.float32)
         for s_idx in range(n_sites_real):
-            # channels 0-3: m_max per L
-            x[s_idx, :, 0:4] = m_max_per_site[s_idx]
-            # channels 4-7: structure (broadcast across sites)
-            x[s_idx, :, 4:8] = struct_stack
-            # channel 8: structure_valid mask (broadcast)
-            x[s_idx, :, 8] = struct_valid
-            # channels 9-12: flank_dev per L
-            x[s_idx, :, 9:13] = flank_dev[s_idx]
-            # channels 13-14: LEFT ZERO (2026-09-10 rev). Previously encoded
+            x[s_idx, :, M_START:M_START + nL] = m_max_per_site[s_idx]
+            x[s_idx, :, S_START:S_START + 4] = struct_stack
+            x[s_idx, :, SV_IDX] = struct_valid
+            x[s_idx, :, F_START:F_START + nL] = flank_dev[s_idx]
+            # flank_bg_identity: bag-level scalar broadcast across all
+            # positions for this site. Real sites only (padded sites stay 0).
+            x[s_idx, :, BG_IDX] = flank_bg_identity
+            # orient channels (O_START, O_START+1): LEFT ZERO (2026-09-10 rev). Previously encoded
             # `arch.orient` one-hot — a GOLD leak. An intermediate revision
             # replaced it with per-site "winning orient" (derived from data),
             # but that quantity is 80%-accurate on strong-signal v6r2 and
             # undefined on non-planted real data (DDE has no "true" orient).
-            # Orient information is already implicit in ch 0-3 (per-position
-            # max over orient) and ch 9-12 (argmax from the winning orient),
+            # Orient information is already implicit in m_max (per-position
+            # max over orient) and flank_dev (argmax from the winning orient),
             # so an explicit orient channel adds noise, not signal. Retained
             # as zero rather than dropped from the tensor to preserve the
-            # 15-channel architecture (checkpoint compatibility). If a
-            # deploy-legal orient signal is ever wanted, it belongs in a
-            # separate v7' experiment, not the default input.
-            # (x[s_idx, :, 13] and x[s_idx, :, 14] remain zero from the
-            #  np.zeros initialization above; explicit no-op here.)
+            # channel-slot architecture. If a deploy-legal orient signal is
+            # ever wanted, it belongs in a separate v7' experiment.
+            # (x[s_idx, :, O_START] and x[s_idx, :, O_START+1] remain zero
+            #  from the np.zeros initialization above; explicit no-op here.)
 
         # Apply fixed per-channel divisor. Padded sites (>= n_sites_real)
         # stay zero, which are correct pre-normalization values.

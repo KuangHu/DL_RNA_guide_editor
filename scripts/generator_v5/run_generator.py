@@ -122,14 +122,15 @@ def _worker_build_bag(args):
     rng = random.Random(seed)
 
     if v7_real_mode:
-        # v7-real path: real 60+60 genomic flank + multi-region synthetic
-        # nc + reversed flow. n_sites: honor CLI override; else uniform {3..8}.
-        # bag_id carries `v7real_{mode}_` prefix so downstream caches keyed on
-        # bag_id CANNOT collide with v7 or v6r2 (which use `bag_XXXXXX`).
-        # See feedback-cache-content-key: v7 cache poisoning was exactly a
-        # bag_id collision.
+        # v7-real path (V8 corpus): real 60+60 genomic flank + multi-region
+        # synthetic nc + reversed flow + V8 conserved-region + V8 negative
+        # modes. n_sites: honor CLI override; else uniform {3..8}.
+        # bag_id carries `v8_{mode}_` prefix (renamed from `v7real_` at V8
+        # freeze) so downstream caches keyed on bag_id CANNOT collide with
+        # v7-real, v7, or v6r2 corpora. See feedback-cache-content-key:
+        # v7 cache poisoning was exactly a bag_id collision.
         assert _WORKER_REAL_POOL is not None, "worker was not initialized in v7_real_mode"
-        bag_id = f"v7real_{negative_mode}_bag_{idx:06d}"
+        bag_id = f"v8_{negative_mode}_bag_{idx:06d}"
         bag = build_bag_v7_real(bag_id, rng, _WORKER_REAL_POOL,
                                      n_sites=n_sites_override,
                                      negative_mode=negative_mode,
@@ -537,11 +538,26 @@ def main() -> int:
     ap.add_argument("--rate-table-path", type=str,
                      default="/global/scratch/users/kh36969/DL_novel_guide_editor/v5_gen/rate_table.json")
     ap.add_argument("--negative-mode", type=str, default="none",
-                     choices=("none", "scattered", "partial", "twin"),
-                     help="none = positive; scattered = per-site nc_start hard "
-                          "negative; partial = 1..n_sites-1 sites planted hard "
-                          "negative; twin = per-site nc_start with accessibility"
-                          "-matched percentile (Stage 1d).")
+                     choices=("none", "scattered", "partial",
+                              "flank_scattered",
+                              "no_alignment", "repeat_flank",
+                              "tsd_negative"),
+                     help="none = positive; scattered = N-candidate per-site "
+                          "guide with nc-only planting (no flank conserved); "
+                          "partial = 1..n_sites-1 sites planted hard negative; "
+                          "flank_scattered (V8, v7-real only) = per-site "
+                          "target_start scattered in flank; "
+                          "no_alignment (V8, v7-real only) = nc pure random + "
+                          "flank raw (no rewrite, no plant); "
+                          "repeat_flank (V8 mode 4, 2026-09-25) = ONE base "
+                          "flank shared across K sites with per-site mutation "
+                          "rate U[0,0.05]; mimics DDE-like multi-copy elements. "
+                          "tsd_negative (V8 mode 5, 2026-09-25) = flank has "
+                          "TSD insert at target, nc has TIR-insert body; no "
+                          "guide plant. unstructured_nc_full (V8 mode 2) "
+                          "RETIRED in V8.4 (2026-09-27) — dinuc-shuffled Rfam "
+                          "indistinguishable from real Rfam via any candidate "
+                          "structure channel at 60bp scale. twin removed in V8.")
     ap.add_argument("--nc-homology-rate", type=float, default=None,
                      help="Override the per-bag nc_homology_rate axis to a fixed "
                           "value in [0.5, 1.0]. 1.0 = identity (A8a anchor); "
@@ -587,7 +603,8 @@ def main() -> int:
                           "minimally mutated to hit planted_m). Wide axes: "
                           "target_L U{9..14}, planted_m U{8..min(11,L)}, "
                           "center_offset U[-40,+40], nc_len U[100,250]. "
-                          "Negative modes: {none, twin, partial, scattered}. "
+                          "V8 negative modes: {none (positive), partial, "
+                          "scattered, flank_scattered, unstructured_nc_full}. "
                           "Junction motif retired (weights [1.0]). Mutually "
                           "exclusive with --v7.")
     args = ap.parse_args()
@@ -606,6 +623,16 @@ def main() -> int:
         real_pool = RealFlankPool.load_default()
         print(f"[gen] v7-real mode: real-flank pool = {len(real_pool.genomes)} genomes, "
               f"{real_pool.total_len:,} bp; rate table SKIPPED; is_sites pool BYPASSED")
+        # V8.1 rng-alignment invariant (2026-09-27). Verify bag-level rng
+        # consumption is byte-identical across all 8 negative modes for a
+        # fixed seed BEFORE the multi-hour corpus write. Trips instantly
+        # if any mode-specific branch consumed extra rng without a matched
+        # draw on the other branches.
+        from scripts.generator_v5.bag_v7_real import validate_rng_alignment
+        print(f"[gen] running V8.1 rng-alignment invariant "
+              f"(8 modes × 100 bags at seed=0) ...")
+        validate_rng_alignment(seed=0, n_bags=100, real_flank_pool=real_pool)
+        print(f"[gen] rng-alignment invariant PASSED")
         del real_pool
         tbl = None
         fl = []

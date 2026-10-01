@@ -494,10 +494,19 @@ def _build_common(records: list[TnpRecord], shard_dir: Path,
                   orients: tuple[Orient, ...], Ls: tuple[int, ...],
                   meta: dict, progress_every: int = 20) -> MatchTable:
     shard_dir.mkdir(parents=True, exist_ok=True)
+    n_skipped = 0
     for i, t in enumerate(records):
-        _write_shard(shard_dir, t, orients, Ls)
+        npz_path = shard_dir / f"{t.tnp_id}.npz"
+        if npz_path.exists() and npz_path.stat().st_size > 0:
+            n_skipped += 1
+        else:
+            _write_shard(shard_dir, t, orients, Ls)
         if (i + 1) % progress_every == 0:
-            print(f"  [match_table] {i+1}/{len(records)} tnps written", flush=True)
+            print(f"  [match_table] {i+1}/{len(records)} tnps written "
+                  f"(skipped_existing={n_skipped})", flush=True)
+    if n_skipped:
+        print(f"  [match_table] resumed: {n_skipped}/{len(records)} tnps "
+              f"already had NPZs, skipped write", flush=True)
     _write_index(shard_dir, records, orients, Ls, meta)
     print(f"  [match_table] index written to {shard_dir}", flush=True)
     return _load_from_index(shard_dir)

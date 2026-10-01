@@ -29,9 +29,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.v5a_framework.match_table import (
-    ORIENTS, DEFAULT_LS, SiteRecord, TnpRecord, _build_common,
+    ORIENTS, SiteRecord, TnpRecord, _build_common,
 )
 from model.channel_b.constants import MAX_L, Ls
+# V8 (2026-09-23): builder must use MODEL Ls, not framework DEFAULT_LS
+# (which is frozen at (9,10,11,12)). V8 widens to (9..14); passing
+# framework DEFAULT_LS would silently drop L=13/14 signal from the shard.
 
 # Multi-region concat parameters — MUST match model/channel_b/data.py to
 # keep shard site-position indices consistent with loader.
@@ -187,7 +190,7 @@ def build_v7_shard(jsonl_path: Path, shard_dir: Path,
         "min_sites": min_sites,
         "cap_sites": cap_sites,
     }
-    _build_common(records, Path(shard_dir), ORIENTS, DEFAULT_LS, meta,
+    _build_common(records, Path(shard_dir), ORIENTS, Ls, meta,
                      progress_every=50)
 
 

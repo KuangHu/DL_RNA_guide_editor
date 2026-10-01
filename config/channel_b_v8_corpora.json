@@ -1,0 +1,14 @@
+{
+  "_note": "V8.4 corpus map (updated 2026-09-27). 7 modes: 1 positive (none) + 6 negatives (partial, scattered, flank_scattered, no_alignment, repeat_flank, tsd_negative). unstructured_nc_full REMOVED in V8.4 — dinuc-shuffled Rfam is indistinguishable from real Rfam via ch4-7 (max |d|<0.05) and via candidate structure channels p_ss/dG_open_u1/max_bpp/pair_entropy at 60bp scale; the mode was a noise negative under the current 20-channel representation. V8.4 nc scaffold is Rfam-derived: [random][rfam_left+guide+rfam_right][random], with left+right from ONE contiguous window. Requires model constants at V8 (Ls=9..14, N_CHANNELS=20 incl. flank_bg_identity).",
+  "batch_root": "/global/scratch/users/kh36969/DL_novel_guide_editor/v84_generation/50k",
+  "shard_root": "/global/scratch/users/kh36969/DL_novel_guide_editor/v84_shards",
+  "corpora": [
+    ["v84_none",                 "v84_none.jsonl",                 "v84_none_shard"],
+    ["v84_partial",              "v84_partial.jsonl",              "v84_partial_shard"],
+    ["v84_scattered",            "v84_scattered.jsonl",            "v84_scattered_shard"],
+    ["v84_flank_scattered",      "v84_flank_scattered.jsonl",      "v84_flank_scattered_shard"],
+    ["v84_no_alignment",         "v84_no_alignment.jsonl",         "v84_no_alignment_shard"],
+    ["v84_repeat_flank",         "v84_repeat_flank.jsonl",         "v84_repeat_flank_shard"],
+    ["v84_tsd_negative",         "v84_tsd_negative.jsonl",         "v84_tsd_negative_shard"]
+  ]
+}

@@ -1799,6 +1799,19 @@ Do not import from `_deprecated_*`. Kept in the tree only so the falsification h
 1. Any change touching a locked component: run `python -m scripts.generator_v5.run_all_anchors`. All 6 anchors must PASS.
 2. Any new comparison of two MetricReports across corpora: MetricCondition must be built out with `corpus` and `guide_origin` fields; `safe_ratio` must refuse comparisons where these differ.
 3. Anchor drift is a hard STOP: investigate before committing.
+4. **Validators must be proven to fail before their pass is trusted (2026-09-27).**
+   A checker that only ever returns SAFE proves nothing. Every new
+   invariant / audit / gate script must ship with at least one synthetic
+   violation that trips it, AND every re-run must exercise both paths.
+   Positive-path-only self-tests are how the initial V8.1 rng-alignment
+   validator hid its own bug (single continuous rng per mode when the
+   real generator seeds per bag): it passed on every legitimate bag, so
+   without an injected violation it would have shipped broken. Contrast
+   with the earlier shard-hash script that defaulted to `return SAFE`
+   on the failure path — same failure mode, opposite polarity: neither
+   was exercised on a known-bad input.
+   Rule: `assert violation_case raises; assert good_case does not raise`
+   must appear in the same test file as the validator. No exceptions.
 
 ## Git tag
 
@@ -2496,3 +2509,1042 @@ Config + spec:
 
 sbatch wrappers: `sbatch/v7real_*.sbatch` (11 files covering full-gen,
 shard-build, training, all gates, all real-data evals).
+
+## Reading rules — added 2026-09-23
+
+Two rules to enforce across all downstream analyses. Both surfaced from
+a Category-A error in the top-100 candidate audit (2026-09-23).
+
+### 1. `flank_dev` (ch 9-12) interpretation
+
+`flank_dev[s, p, L] = (argmax[s, p, L] − median_s' argmax[s', p, L]) / 10`
+
+- **Near zero = argmax at bag-median position = cross-site coherence
+  (the signal we're looking for).**
+- **Large magnitude = per-site argmax scattered across the flank =
+  NO signal.**
+
+Explicitly forbidden: treating the magnitude of `flank_dev` (max, min,
+std of the values) as "signal strength". For this feature the mapping
+is inverted — large values are the negative case.
+
+Zero-rate random baseline: for a 120-bp flank + argmax picking any of
+120 possible positions, the probability that a site's argmax equals
+the bag median by chance is `1/120 ≈ 0.83%`. Any interpretation of
+"fraction of zero cells" MUST compare against this baseline; 0.88%
+non-zero-fraction ~= random noise, not signal.
+
+### 2. Site-subset statistics must read the actually-scored sample
+
+Any per-bag statistic that operates on "the K sites of the bag" MUST
+read those K sites from **the same sample the model was given at
+scoring time** (typically the emit JSONL). Reading a different sample
+from the source (e.g., the first N of `bags/insertions_sites.jsonl`,
+or a re-drawn `rng.sample`) is a **Category A error** — the check and
+the model are being applied to different data under the same rule,
+and the check's verdict does not transfer to the model's output.
+
+Bug that surfaced this rule (2026-09-23):
+`site_independence_check.py` read the first 30 sites of the source
+bags jsonl for its pairwise flank identity check, while the model was
+scored on `rng.sample(prefilter_sites(all_193), 8)` from the same bag.
+For bags where the source has an early-clustered redundant subset but
+the random-8 draws a diverse subset, the check declared REDUNDANT
+while the model saw INDEPENDENT sites. Fix: read flanks from the emit
+JSONL used at scoring time.
+
+## Audit-tool findings recorded — added 2026-09-23 (do not fix mid-flight)
+
+Two one-line records; neither triggers a rerun.
+
+### Emit script rng is non-reproducible per-bag
+
+`scripts/channel_b_fna_ins_discovery.py` uses one global `rng =
+random.Random(args.seed)` consumed sequentially across bags. Isolated
+re-run of a single bag's `rng.sample(kept, 8)` starting from a fresh
+`Random(seed)` gives 0/8 overlap with the stored emit's 8 (verified on
+TNP02309, 2026-09-23).
+
+**Rule:** any per-bag re-check must read the 8 sites from the emit
+JSONL (`fna_ins_discovery.jsonl`), NEVER re-run the emit sampling in
+isolation. All current per-bag probe/ablation scripts already conform
+(they load via `ChannelBDataset(emit_jsonl, shard, ...)`). No existing
+analysis is invalidated. Fix the emit script only if the corpus is
+regenerated.
+
+### Meta-lesson: audit-tool bugs don't halt the main line
+
+Chain that surfaced this: audit-script bug found → discussion of fix →
+in the discussion, new concern found → further discussion. The loop
+extends indefinitely because audit scripts are never perfect.
+
+**Rule:** an audit-tool bug halts the main line ONLY if it changes an
+already-drawn conclusion. Otherwise it gets recorded in one line and
+the main line continues.
+
+Example applications from this session:
+- Check 0's criterion was arithmetically biased (max over 435 pairs vs
+  28 pairs); the one-directional flip pattern was a property of the
+  criterion, not the data. Recording as: "Check-0-style comparisons
+  need matched sample sizes or a criterion that isn't extremum-biased."
+  Not re-running.
+- Emit rng non-reproducibility (above): no effect on drawn conclusions,
+  read-from-stored-emit rule already the norm.
+
+## Check 1 — twin vs positive position distributions (PREREGISTERED, 2026-09-23)
+
+**Motivation:** if the marginal position distributions of the planted
+guide (nc-side) or the target window (flank-side) differ systematically
+between `positive` and `twin` modes, then the v7-real model could
+distinguish the two modes from position priors alone, not from
+cross-site coherence. Any v8 addition of a "position-consistency loss"
+would then be leaking mode identity, not supervising the intended
+signal. This must be verified before v8 or before interpreting v7-real
+scores as "coherence-driven".
+
+**What is measured** (from `scripts/generator_v5/bag_v7_real.py`):
+
+For a large sample of bags in each mode (`positive` vs `twin`, N≥10,000
+each), record for each bag:
+1. `planted_pos` — nc-side position where the guide is planted
+   (`plant_guide_in_nc(...)`, `rng.randint(MAX_L, len(nc) - MAX_L - L)`).
+   Support: [12, 250-12-L].
+2. `target_start` — flank-side offset of the target window
+   (`sample_target_position(...)`, center U[-40, +40] from junction 60,
+   clipped to [0, 120-L]).
+3. `planted_pos - target_start` — the coord-frame offset between nc
+   plant and flank target across the two axes.
+
+Compute the three histograms per mode. Both modes' code paths sample
+from identical distributions in principle, so the empirical histograms
+should be indistinguishable.
+
+**Preregistered pass criterion (numerical, before looking at data):**
+
+For EACH of the three quantities:
+- Two-sample KS test p-value ≥ 0.01 between positive and twin samples
+- |mean_positive − mean_twin| / pooled_std ≤ 0.05
+- Support endpoints identical (min, max across ≥10K samples)
+
+**Preregistered fail action:**
+
+If ANY quantity fails either the KS threshold or the mean-shift
+threshold:
+- v7-real interpretation must be revised: current model may be a hybrid
+  of position-prior + coherence classifier, not pure cross-site
+  coherence detector. All "the model uses coherence" claims are
+  scoped to "conditional on the position prior being the same across
+  modes" — which the failed test would refute.
+- v8 CANNOT add a position-consistency loss without first
+  reparameterizing to a mode-agnostic conditioning (e.g., condition on
+  `planted_pos / nc_len` rather than raw position, or explicitly
+  match positive/twin distributions in the generator).
+- Trace the systematic difference in `bag_v7_real.py` — most likely
+  candidates: rng consumption order (twin consumes more random numbers
+  before `plant_guide_in_nc` due to per-site guide sampling), rejection
+  sampling on scattered mode leaking asymmetrically into positive vs
+  twin, or `nc_len` conditioning at generation time.
+
+**Not-yet-implemented — script and run pending.**
+Criterion recorded pre-data per rule "判据先写 FROZEN.md 再看图".
+
+## V8 target_start scope fix — 2026-09-23
+
+**Change:** in `scripts/generator_v5/bag_v7_real.py::build_bag_v7_real`,
+`target_start` sampling moved from per-site to bag-shared + small
+per-site jitter.
+
+- Pre-V8: `target_start = sample_target_position(rng, L)` inside the
+  per-site loop → each site drew independently from center offset
+  `U[−40, +40]` → per-bag span 40–80 bp.
+- V8: `bag_center_off = rng.uniform(−40, +40)` outside the loop,
+  then per-site `jitter = rng.randint(−TARGET_START_JITTER,
+  +TARGET_START_JITTER)` inside. `TARGET_START_JITTER = 2` →
+  per-site jitter `U{−2..+2}` → per-bag span ≤ 4 bp.
+
+**Reason:** spec §8.4 stated the marginal distribution of
+`center_offset` but not its sampling scope. The implementation defaulted
+to the most direct reading (inside the loop → per-site). This mismatched
+real biology.
+
+**Durrant evidence (real-positive reference, N=50):**
+- Durrant WT median `flank_argmax_std_L11 = 1.32 bp` (mean 6.00)
+- Pre-V8 synth positives: per-bag `target_start` span 40–80 bp → the
+  flank_argmax across sites would have std of the same order
+- fna_ins_discovery scored bags: `flank_std_L11` distribution bimodal
+  with mean 13.42, p50 12.67 — does not resemble Durrant
+
+The pre-V8 synth positives taught the model "positive means sites
+independently match the guide at scattered flank offsets". Real
+biology says the opposite: sites converge near the junction.
+
+**Scope of the change:**
+- Applied UNIFORMLY across all `negative_mode` values (positive /
+  twin / partial / scattered) so twin remains a distributional twin
+  of positive on the target_start axis.
+- Downstream negative-mode branching (twin's per-site guide, scattered's
+  3 shared guides, partial's un-planting) unchanged.
+
+**Spec update:** `docs/V7_SPEC.md` §8.4.1 sampling scope table added.
+
+**Verification pending:** 20 positive bags — confirm per-bag
+`target_start` span ≤ 4 bp. (Job pending after this note.)
+
+**Reproducibility:** pre-V8 behavior preserved at git tag
+`v7-real-frozen` (bag_v7_real.py at commit `cc5aaa4`).
+
+**Not-touched:** all other generator axes (bag_guide sampling,
+planted_pos in nc, planted_m per site, orient sampling, nc synthesis,
+coord emit) remain identical to v7-real.
+
+## V8 positive generator — FROZEN 2026-09-23
+
+Positive-mode data generator (`build_bag_v7_real` with `negative_mode="none"`)
+is ready to run. All V8 changes applied and smoke-verified.
+
+### What's in V8 positive
+
+**Bag composition:**
+- **Flanks:** 120 bp real bacterial DNA per site, sampled from the
+  50-genome `RealFlankPool` (AT ≤ 0.70 filter, no N in window).
+- **n_sites:** U{3..8} per bag.
+- **bag_guide:** GC-weighted random ACGT, length U{9..14}, one guide per bag.
+- **Per-site guide:** all K sites share `bag_guide` (this IS the
+  cross-site coherence signal).
+- **Per-site planted_m:** U{8..min(11, L)}, drawn independently per site.
+- **target_start scope:** bag-shared center `U[-15, +15]` offset from
+  junction=60, plus per-site jitter `U{-2..+2}` (`TARGET_START_JITTER=2`).
+  Per-bag span ≤ 4 bp.
+- **Conserved regions (V8.1, 2026-09-27 — nc-side ONLY):** left and right
+  templates drawn independently at bag level, lengths ~ `U{15..35}`,
+  GC-weighted random ACGT. They appear ONLY inside `nc_planted` as the
+  wrap `[left_conserved + bag_guide + right_conserved]`. Flank side is
+  bacterial DNA with no cons-template match.
+- ~~**Per-site conserved match on flank:** each site's flank rewritten
+  at `flank[ts - left_len : ts]` and `flank[ts + L : ts + L + right_len]`
+  to match the bag conserved templates at fraction ~ `U[0.55, 0.75]`.~~
+  **REMOVED in V8.1 (2026-09-27) — was a bug.** See correction §V8.1 below.
+- **nc:** [random ACGT] + [left_conserved + bag_guide + right_conserved] +
+  [random ACGT]. Length U[120, 250] per region (planted + noise).
+  ncRNA structure is INCIDENTAL — no fold-directed design at generation time.
+
+**V8.1 correction (2026-09-27) — flank cons removal:**
+- **What was wrong.** V8.0 rewrote the ±15-35 bp flanking `flank[ts:ts+L]`
+  to match synthetic bag-level cons templates at fraction `U[0.55, 0.75]`.
+  Real Durrant WT (IS110) genomic flanks are bacterial DNA and carry no
+  such synthetic template match — the pattern was a label proxy that
+  crushed real-data scores.
+- **Consequence.** `v8_main_v3` (best.pt, epoch 3, val_loss 0.2349,
+  val_auroc_proxy 0.9511) scored:
+  DurrantWT p50 = 0.24 (crossover ablations: strip flank cons on synth
+  positive → -5.5; strip nc cons → -3.6; both cons losses accumulate
+  but flank floor at ~0.24 hides nc effect on Durrant),
+  synth positive p50 = 5.16, DDE p50 ≈ 0.00. Attributing the DurrantWT
+  low score to OOD K=1, structure OOB, flank_argmax std,
+  flank_dev shape, and 1bp nc↔flank offset all REFUTED by ablation;
+  the crossover test (Durrant/synth flank × Durrant/synth nc) isolated
+  both flank cons and nc cons as suppression sources; flank cons is
+  the fixable one (nc cons is a legitimate synthetic-vs-real gap on
+  ncRNA scaffold and stays).
+- **Change.**
+  1. `bag_v7_real.py` lines 470-493 (was 470-528): flank rewrites
+     `flank[ts-Lcons:ts]` and `flank[ts+L:ts+L+Rcons]` deleted;
+     `rewrite_left` / `rewrite_right` switches deleted.
+  2. `bag_v7_real.py` nc synthesis: `unstructured_nc_full` split from
+     the positive/partial/flank_scattered/repeat_flank branch — now
+     plants `bag_guide` alone (no cons wrap), preserving its role as
+     "positive requires nc-side cons context" trainer.
+  3. `ts` bounds kept unchanged so target-start distribution is
+     byte-identical to V8.0.
+  4. `docs/V7_SPEC.md` §8.10 added.
+- **Model retrain required.** v8_main_v3 is now retired.
+  New corpus (v8.1 shards) automatically lands in a new source-hash
+  cache directory (`_source_hash()` hashes JSONL content); SCHEMA_KEY
+  unchanged since channel list is stable.
+- **Reassess after retrain.** DurrantWT p50 expected to rise; DDE
+  specificity expected to hold (DDE has no guide-target match on flank,
+  which is the remaining flank signal). If DurrantWT still low
+  post-retrain, remaining candidate is the nc-side scaffold gap
+  (Bridge RNA ~193 bp vs synthetic random 120-250 bp).
+
+**V8.1 corollary (2026-09-27) — nc-cons structure-visibility gate FAILED:**
+- Pre-retrain check: compute the 4 structure channels
+  (dG_open_uL_pn, H_pair_win, cooperativity_win_pn, E_span_win) over
+  the in-window positions of the planted block, for `none` (nc has
+  cons wrap) vs `unstructured_nc_full` (nc has guide alone). 200 bags
+  per mode, pooled ~12k positions per mode. All 4 channels: KS<0.10
+  AND |Cohen's d|<0.15 (largest is E_span_win at |d|=0.081, still ~2×
+  below threshold). Random cons templates fold indistinguishably from
+  noise around the guide.
+- Implication: `unstructured_nc_full` cannot be discriminated from
+  positive via any input channel; it is a NOISE NEGATIVE. Training on
+  it mislabels a positive-shaped bag → net-negative for signal.
+- **Revised V8.1 retrain corpus: 7 modes** —
+  {none, partial, flank_scattered, repeat_flank, scattered,
+  no_alignment, tsd_negative}. `unstructured_nc_full` demoted to
+  diagnostic-only.
+- **Rfam-scaffold direction is the clear next step** for making
+  nc-side signal visible: real ncRNA scaffold (Bridge RNA ~193 bp,
+  MFE ~-64.6) instead of random ACGT so structure is real rather than
+  incidental. Deferred to post-retrain iteration.
+- Gate script: `scripts/audit_v81_cons_structure_visibility.py`.
+  Pre-registered decision rules (KS≥0.30 or |d|≥0.30 → visible; KS<0.10
+  and |d|<0.15 → invisible; otherwise weak) baked into the report. Job
+  26493265 executed the gate.
+
+**V8.2 iteration (2026-09-27) — Rfam bracket implemented + REVERSAL
+finding on ch4-7:**
+- Implementation: `bag_v7_real.py` bag-level bracket draw. Positive-
+  family modes bracket = contiguous slice from a random bacterial Rfam
+  seed (8 families cached on scratch). `unstructured_nc_full` bracket =
+  Altschul-Erikson dinuc shuffle of the same Rfam window (Hierholzer
+  algorithm; preserves mono + di counts exactly). Both drawn
+  unconditionally in every mode for rng alignment; selection differs.
+  `V7RealBagRecord.bracket_source` field logs "rfam" vs
+  "dinuc_shuffled_rfam" per bag.
+- First visibility gate (Rfam bracket vs random-ACGT bracket) showed
+  `dG_open_uL_pn |d|=0.312`, crossing the visibility line. Read as
+  path (b) VIABLE.
+- **REVERSAL** (dinuc-shuffle control gate, same day): under
+  composition-matched control (Rfam vs dinuc-shuffled Rfam), all 4
+  structure channels collapse to invisible:
+  * `dG_open_uL_pn`         d=+0.003, KS=0.026
+  * `H_pair_win`            d=−0.048, KS=0.037
+  * `cooperativity_win_pn`  d=+0.026, KS=0.026
+  * `E_span_win`            d=−0.003, KS=0.034
+  The 0.312 signal was entirely mono/di composition, not folding.
+  Detected by the compositional-parity confirmation panel in the gate
+  report (mono + di count side-by-side check) — same class as the
+  validator-must-prove-failure rule (§4 above): a control that only
+  passes proves nothing without a check on the control itself.
+- **Conclusion**: ch4-7 are partition-function window-averaged scalars.
+  Two sequences with matched mono + di composition fold to different
+  structures but similar per-position window means. The channels are
+  compositional proxies, not folding-signal detectors. `unstructured_nc_full`
+  cannot be discriminated from positive by any structure channel
+  under the current 20-channel input representation, regardless of
+  bracket construction.
+- **Path forward — path (a): add a real structure channel.** Cheapest
+  candidates are already computed by `compute_features_v2` but not
+  exported to the input tensor: `p_ss` per position, `dG_open_u1` per
+  position, max-BPP per row, pair-entropy per row (all derivable from
+  the existing `bpp` matrix), and the `ensemble_energy` scalar. Gate
+  to run: Rfam vs dinuc-shuffled Rfam on each candidate channel; ship
+  the ones that cross |d| ≥ 0.30.
+- Gate scripts: `scripts/audit_v81_rfam_scaffold_visibility.py` (the
+  misleading 0.312 gate), `scripts/audit_v82_shuffled_bracket_visibility.py`
+  (the reversal gate that caught it). Jobs 26493320, 26493876, 26494077.
+
+**V8.4 rebuild (2026-09-27) — Rfam nc scaffold + V8.3 cluster retirement +
+unstructured_nc_full removal + PROCESS FINDING on invariant widening:**
+
+- **What ships in V8.4:** nc scaffold =
+  `[random pad][rfam_left + bag_guide + rfam_right][random pad]` with
+  `rfam_left` and `rfam_right` as byte-identical slices of the SAME
+  contiguous window of a family-BALANCED-sampled bacterial Rfam
+  sequence (8 families, family-uniform draw). Flank = 120-bp real
+  bacterial DNA with only `[ts, ts+L)` mutated toward `bag_guide`.
+  Strict flank-scope invariant restored. 7 negative modes total.
+
+- **Why Rfam nc:** the earlier Rfam-vs-Bridge score-swap test showed
+  swapping `v8_main_v3`'s nc scaffold from synth random ACGT to real
+  Rfam (or Durrant Bridge RNA) collapsed the model score identically
+  from ~5.0 → ~2.0. Interpretation: the model treats real ncRNA
+  scaffolds as OOD from its training distribution — regardless of
+  which channel it uses to see them. Training on Rfam-scaffold nc
+  should close that OOD gap on Durrant. NOT a structural-signal claim
+  — the dinuc-shuffle control gate (see V8.1 corollary above) proved
+  ch4-7 do not distinguish real Rfam from dinuc-shuffled Rfam. Rfam
+  helps because it shifts the training distribution, not because it
+  supplies structure the model can read.
+
+- **Contiguous-window property empirically verified** (10/10 audited
+  bags): each bag's `(left_conserved, right_conserved)` located in
+  the Rfam pool as `(rfam_seq[i:i+lcl], rfam_seq[i+lcl+L:i+lcl+L+rcl])`.
+  Printed source pool index + position + discarded middle for each.
+  See `scripts/audit_v84_step3_verify.py`, job 26494842.
+
+- **Family-balanced sampling** (added Step 4b): `_sample_rfam_window`
+  now picks Rfam family uniformly at random, then a sequence within
+  that family. RF00174 (Cobalamin) had ~50% share of the flat pool
+  after filtering; family-uniform sampling caps each family at 1/8
+  weight regardless. Prevents the model from over-fitting to one
+  family's sequence features.
+
+- **`unstructured_nc_full` REMOVED.** Under the composition-matched
+  dinuc-shuffle control gate, NEITHER the shipping ch4-7 nor any
+  candidate structure channel already computed by
+  `compute_features_v2` (p_ss, dG_open_u1, max_bpp per row,
+  pair_entropy per row) could distinguish real Rfam from shuffled
+  Rfam at the 60-bp bracket scale:
+
+  | candidate channel | Cohen's d | KS |
+  |---|---|---|
+  | p_ss                    | −0.023 | 0.025 |
+  | dG_open_u1              | +0.026 | 0.025 |
+  | max_bpp (per row)       | +0.031 | 0.033 |
+  | pair_entropy (per row)  | −0.039 | 0.025 |
+  | H_pair_win (ch)         | −0.048 | 0.037 |
+  | dG_open_uL_pn (ch)      | +0.003 | 0.026 |
+
+  All well below the pre-registered visible line (|d| ≥ 0.30 or
+  KS ≥ 0.30). At the 60-bp scale, folding energy is dominated by
+  dinucleotide composition — dinuc-shuffled sequences fold to
+  different topologies with the same energy budget and similar
+  per-position window means. Without a channel to detect it,
+  `unstructured_nc_full` was noise-only under any bracket
+  construction. Retired.
+
+- **V8.3 cluster mechanism (flank + nc) retired.** V8.3 introduced
+  1-2 position-specific 3-bp "context clusters" per bag, applied at
+  matched positions on flank AND nc, motivated by the Durrant IS621
+  target-adjacent conservation profile (see §V8.1 corollary +
+  [[finding-durrant-flank-context-conservation]]). Retired for two
+  reasons:
+  1. Flank-side clusters (V8.4 Step 2): had no biological basis
+     beyond the single-family Durrant reference. Kept-narrow but
+     unverified. Removed.
+  2. Nc-side clusters (V8.4 Step 3): without their flank counterparts,
+     they had no signal path — the model reads m_max on nc which
+     requires flank↔nc matching bp. A nc-only rewrite is invisible.
+
+- **PROCESS FINDING — invariant widened in the same change that
+  needed the widening (V8.3):** the V8.3 patch added flank-side
+  cluster writes AND simultaneously widened `_assert_flank_scope`
+  from strict (target-window-only) to permissive (target ∪
+  bag-declared cluster spans), passing the new writes through the
+  widened check as legitimate. Effect: the strict invariant was
+  never re-run against V8.3-era code, because it was pre-relaxed to
+  accept the new writes. This is the same class as
+  [[feedback-validator-must-prove-failure]]: an invariant modified
+  to accommodate new construction proves nothing. In V8.4 Step 2 the
+  invariant was reverted to strict semantics AND run against a
+  synthetic off-target write injection to prove it fires — the check
+  that never ran under V8.3.
+
+- **Rule addition to Change protocol (§4 already covered this class;
+  extending):** when a change introduces new writes to a region an
+  invariant guards, the change must either (a) NOT widen the
+  invariant (writes forbidden), (b) widen the invariant only AFTER
+  proving the strict version still fires against representative
+  cases the new writes cover, or (c) if truly required, be split
+  into two commits — first the widening + fail-loud injection test,
+  then the new writes. Never (widen + write) in a single change.
+
+- **Retired code:** `_dinuc_shuffle`, `_draw_context_clusters`,
+  `_cluster_flank_span`, `_cluster_nc_span`, `_apply_cluster_at`,
+  cluster constants, `context_clusters` + `bracket_source` fields on
+  `V7RealBagRecord`.
+
+- **Awaiting model retrain outcome — the one directly-testable claim:**
+  V8.4 corpus should close the Rfam-vs-synth score gap. Confirmatory
+  test after retrain: synth flank + V8.4 Rfam nc → ? (expect within
+  ~0.5 of Durrant nc); Durrant flank + Durrant nc → known 2.39. If
+  the V8.4 model no longer shows a 3-point drop when swapping synth→Rfam
+  nc, the design change did its job.
+
+- Verification job IDs: `26494816` (V8.4 self-test — strict invariant
+  fires on injected violation); `26494842` (V8.4 Step 3 verify — 10/10
+  contiguous-window PASS + 7-mode axis parity + Rfam pool composition).
+
+**V8.4 post-training verdict (2026-09-28):**
+- v84_main/best.pt = epoch 5, val_loss=0.1599, val_auroc_proxy=0.9587
+  (vs v8_main_v3 epoch 3: 0.2349, 0.9511). Simpson-distortion caveat
+  applies to raw val_auroc_proxy comparison; direct eval is:
+
+- **DurrantWT K-series (jobs 26517666, 26518880):**
+  | K | v8_main_v3 p50 | v84_main p50 | Δ |
+  |---|---|---|---|
+  | K1 | 3.500 | −0.004 | −3.50 |
+  | K3 | 2.706 | 2.308 | −0.40 |
+  | K5 | 1.617 | 4.347 | +2.73 |
+  | K8 | 0.236 | 7.538 | **+7.30** |
+  v84 monotone-INCREASING (correct); v3 monotone-DECREASING (broken).
+  v3's K=1=3.50 was an uncalibrated response to no-signal defaults
+  (flank_dev = 0 for K=1 by construction, flank_bg_identity = 0.0
+  hardcoded default). v84 correctly floors on K=1.
+
+- **DDE 10-family specificity (job 26519301, vs DurrantWT_K5):**
+  | model | mean AUROC | min | max |
+  |---|---|---|---|
+  | v8_main_v3 | 0.9623 | 0.885 (IS1595) | 1.000 |
+  | v84_main   | 0.9956 | 0.984 (IS5)    | 1.000 |
+  | v7-real ref | 0.9897 | — | — |
+  v84 beats v3 on 9/10 families, zero regressions. IS1595 (v3's
+  weakest) closes from 0.885 to 0.996 (+0.111). v84 also beats
+  v7-real historical reference.
+
+- **Phase 7 nc-swap gate "FAIL" verdict OVERTURNED (2026-09-28).**
+  That gate used DurrantWT_K1 alone as the "full-real Durrant"
+  reference (p50 = −0.004), interpreting it as v84 catastrophic
+  regression. But K=1 is architecturally hostile for a cross-site
+  MIL detector (see K-series above). The fair test at K≥3 shows
+  v84 is a substantial improvement over v3.
+
+- **K ≥ 3 SCOPE DECLARATION (adopted 2026-09-28, §8.13 of spec).**
+  Channel B requires K≥3. K=1 belongs to Channel A (closed-form,
+  ~96% PPV per finding_v1_promiscuity). K=2 acceptable at reduced
+  confidence; report explicitly. Bags with K<3 must be filtered
+  upstream or routed to Channel A. Do NOT interpret Channel B
+  scores on K=1 as positive or negative — the model has no valid
+  input to work with.
+
+- **Sub-finding — structure channels (ch6-10) marginally harmful on
+  real Durrant** (job 26517666): zeroing lifts K=1 by +0.56, K=5 by
+  +0.47. Small effect, documented but not fixed. Direction: model
+  reads Rfam-structured signal on training positives, doesn't find
+  it on Durrant Bridge RNA, interprets absence as evidence-against.
+
+- **The V8.4 iteration succeeded.** V8.0-V8.1-V8.2-V8.3 chain of
+  attempts to close the Durrant OOD gap culminated in V8.4: strict
+  flank-scope invariant + Rfam nc scaffold (family-balanced) + 7
+  clean-negative modes + partial ≤30% + flank_scattered as single-
+  variable ts negative + cluster mechanism retired. Result: v84_main
+  is now the reference model. v8_main_v3 checkpoint retained for
+  reference only (see this table); other v8_* checkpoints purged.
+
+**Training-target label:**
+- `y[guide_concat_pos] = K` (positive gets K count at the single guide start).
+- No per-plateau spreading (peak width = 1 position per §data.py:_build_target).
+
+**rng consumption alignment:**
+- nc-length and nc-base draws happen BEFORE any mode-specific rng
+  consumption → nc_lens byte-identical across the retained modes.
+
+**Truncation:**
+- target_start clipped to `[left_conserved_len, 120 - L - right_conserved_len]`.
+- Hard assert in conserved-region rewriting (silent skip disabled).
+- Smoke: 0/2667 sites hit either boundary → no truncation-fraction label proxy.
+
+### What is deliberately NOT in V8 positive (recorded, deferred)
+
+- **Fold-directed nc design.** Only one real IS110 reference (Durrant IS621)
+  was available for calibration; that reference sits at a stem-loop
+  boundary (not a clean loop) and the input tensor doesn't carry pairing
+  identity anyway. Structural design deferred pending broader real
+  references + a dot-bracket-aware input channel.
+- **planted_m == L degeneracy fix.** When `planted_m` equals `bag_guide_L`
+  (25-50% of bags for L ∈ {9, 10, 11}, never for L ∈ {12, 13, 14}), the
+  K sites' target regions become literally identical (guide sequence
+  copied K times). The current model input (15 channels, m_max-only for
+  the guide signal) cannot see per-site sequence identity — verified in
+  the identity-vs-count test — so this doesn't affect training now.
+  Fix requires either a cross-site sequence-similarity channel OR
+  changing `planted_m` range to `U{8..min(11, L-1)}` (guarantees ≥1
+  mismatch per site). Deferred to a later V.
+- **Per-site conserved templates.** Currently one bag-shared conserved
+  template; per-site variation comes from random mismatch-position
+  selection in `mutate_target_to_match`. A more biological "each site
+  has its own natural context" would sample per-site templates.
+
+### V8 negative-mode set frozen alongside positive
+
+- `none` (positive — this freeze)
+- `twin` — retained from v7-real; per-site independent guides, unrelated
+  guide in nc. Conserved regions retained (match nc-side, differ on
+  guide-side).
+- `partial` — retained from v7-real; K un-planted subset skips ALL
+  rewriting including conserved.
+- `scattered` — retained from v7-real; 3-guide nc layout without
+  conserved-region wrapping (would exceed NC_LEN_MAX). Known
+  compositional asymmetry vs other modes noted here.
+- `flank_scattered` — V8 mode 1. Positive-shaped except per-site
+  target_start drawn from `U[-15, +15]` independently (per-bag span ~20 bp
+  under V8 constants; wider than positive's ~4 bp).
+- `unstructured_nc_full` — V8 mode 2. Positive-shaped except left AND
+  right conserved-region rewriting skipped on flanks.
+
+`unstructured_nc_half` was drafted and retired 2026-09-23 (rng drift on
+one extra draw + redundancy with `unstructured_nc_full` for the negative
+direction it was meant to cover). May revisit later.
+
+### Files changed for V8 positive freeze
+
+- `scripts/generator_v5/bag_v7_real.py` — constants block + build_bag_v7_real
+  body (target_start scope, conserved regions, nc-draw ordering, boundary
+  asserts).
+- `docs/V7_SPEC.md` §8.4.1 — sampling scope table (V8 target_start scope).
+- `FROZEN.md` — this entry + earlier V8 target_start scope-fix entry.
+
+### Reproducibility
+
+- Pre-V8 behavior preserved at git tag `v7-real-frozen` (commit `cc5aaa4`).
+- V8 positive frozen state is what's in the current working tree; can
+  be tagged as `v8-positive-frozen` if a git tag is desired.
+
+### Smoke verification status
+
+- Target_start span test (V8 target_start scope): PASS (max 4 across 80 bags × 4 modes).
+- Conserved-region smoke (all 4 modes at time of test): PASS on match
+  fractions (0.65 matched / 0.25 random), marginals aligned, 0%
+  truncation. Final 3-mode smoke re-verifying byte-identical nc_len after
+  `unstructured_nc_half` removal is in-flight (job 26306996).
+
+---
+
+## V8 rng-alignment fix for flank_scattered — 2026-09-23
+
+**Symptom.** First 6-mode 1K smoke (jobs 26307080 + 26307376) reported all
+axes byte-identical across 5 modes except `flank_scattered`, which drifted
+planted_m by 1.5% per bucket:
+
+- flank_scattered: pm={8:1707, 9:1640, 10:1212, 11:929}
+- other 5 modes:  pm={8:1712, 9:1618, 10:1237, 11:921}
+
+L / n_sites / nc_len axes were already byte-identical thanks to the
+V8 rng-consumption ordering fix; planted_m drift was residual to the
+per-site target-start branch.
+
+**Cause.** In `bag_v7_real.py` the two target-start branches consumed
+the *same count* of rng calls per site (1 each), but of *different types*:
+
+- `flank_scattered`: `sample_target_position()` → 1 × `rng.uniform`
+- other modes: `jitter` → 1 × `rng.randint`
+
+Python's `random.Random` consumes different amounts of underlying state
+per method (`uniform` uses one `random()` call → 53 bits; `randint(a,b)`
+uses `randbelow(b-a+1)` which may call `getrandbits` variably). The state
+divergence propagated to the next `sample_planted_m_uniform(rng, ...)`
+call, giving the observed 1.5% pm drift.
+
+**Fix.** Both branches now draw the SAME two rng samples per site
+(`rng.uniform(CENTER_OFFSET_MIN, CENTER_OFFSET_MAX)` +
+`rng.randint(-TARGET_START_JITTER, TARGET_START_JITTER)`), then choose
+which center source to use:
+
+```python
+per_site_center_off = rng.uniform(CENTER_OFFSET_MIN, CENTER_OFFSET_MAX)
+jitter              = rng.randint(-TARGET_START_JITTER, TARGET_START_JITTER)
+if negative_mode == "flank_scattered":
+    center = JUNCTION_POS + per_site_center_off + jitter   # per-site scatter
+else:
+    center = JUNCTION_POS + bag_center_off + jitter        # bag-shared
+target_start = clip(round(center - bag_guide_L/2), ts_lo_bound, ts_hi_bound)
+```
+
+Non-flank modes draw the per-site center_off but ignore it — a small
+rng-waste price for byte parity. `sample_target_position()` is now
+unreferenced by build_bag_v7_real but retained in the module for other
+callers.
+
+**Semantic change to flank_scattered.** Scatter range was implicitly
+`U[0, FLANK_LEN - L]` (full flank via `sample_target_position`, clipped
+to conserved-region bounds ~[15, 96]). It is now `JUNCTION_POS + U[-15,15]
++ U[-2,2]` per site — expected per-bag span ~20 bp, max 33 bp. Still 7×
+the positive's ~3 bp per-bag span, verified in re-run smoke.
+
+**Verification (job 26307548, 1K/mode × 6 modes, seed 0).**
+
+| axis           | byte-identical across all 6 modes |
+|----------------|-----------------------------------|
+| guide_L        | YES                               |
+| planted_m      | YES  (was drifting 1.5%)          |
+| n_sites/bag    | YES                               |
+| nc_len         | YES                               |
+
+Target-start span per bag (median, max):
+- positive-flow modes (none / twin / partial / scattered /
+  unstructured_nc_full): median 3, max 4
+- flank_scattered: median 21, max 33
+
+**Files touched.**
+- `scripts/generator_v5/bag_v7_real.py` — lines 366-386 (single-branch
+  target-start block).
+- `scripts/generator_v5/run_generator.py` — line 540 argparse `choices=`
+  extended to include `flank_scattered` and `unstructured_nc_full`
+  (was rejected pre-fix even though `VALID_V7_REAL_NEGATIVE_MODES`
+  already contained them).
+
+**Rule reinforced.** rng-consumption parity requires same *type* of rng
+call, not just same count. `rng.uniform` and `rng.randint` are not
+interchangeable at the byte level.
+
+---
+
+## V8 twin negative REMOVED — 2026-09-23
+
+**Decision.** `twin` mode dropped from V8 negative set. V8 negatives are now:
+
+    (positive)              none
+    (negatives)             partial, scattered, flank_scattered, unstructured_nc_full
+
+**Rationale.** Twin's job — "each site has its own independent guide,
+breaking cross-site guide coherence" — is already covered by:
+- `scattered`: N_SCATTERED_GUIDES-candidate per-site guide selection,
+  reduces cross-site guide coherence without eliminating it
+- `flank_scattered`: breaks cross-site *position* coherence with shared
+  guide (orthogonal to guide-coherence dimension)
+
+Twin's specific signal (bag-shared conserved template + unrelated guide
+plant in nc) is a narrow slice of negative space that trained-model
+coverage doesn't obviously need beyond the four V8 negatives.
+
+**Code touches.**
+- `scripts/generator_v5/bag_v7_real.py`
+  - `VALID_V7_REAL_NEGATIVE_MODES` tuple: `twin` removed
+  - `build_bag_v7_real`: per-site-guide `if negative_mode == "twin"` branch
+    removed; nc-synthesis `elif negative_mode == "twin"` branch removed;
+    `per_site_nc_planted_pos` tuple no longer includes "twin"
+- `scripts/generator_v5/run_generator.py`
+  - `--negative-mode` argparse `choices=` — `twin` removed
+  - `--v7-real` docstring: negative-mode list updated
+- `sbatch/v8_gen_50k.sbatch`, `sbatch/v8_gen_smoke_1k.sbatch`,
+  `sbatch/v8_gen_smoke_1k_resume.sbatch`: `twin` removed from MODES arrays
+- `scripts/audit_v8_50k_preshard.py`: MODES list updated
+
+**Historical preservation.** Twin implementation preserved at git tag
+`v7-real-frozen` (commit `cc5aaa4`). The old `scripts/generator_v5/bag_v2.py`
+still references twin (v6r2-era, unrelated to V8 — left untouched).
+
+**Byte-parity.** Removing twin does NOT affect the other 5 modes' rng
+consumption or corpus contents — twin's rng draws were inside a branch
+gated on `negative_mode == "twin"`, never executed for other modes. The
+existing 50K corpora for none/partial/scattered/flank_scattered/
+unstructured_nc_full remain valid.
+
+**Corpus cleanup.** Deleted:
+- `/global/scratch/users/kh36969/DL_novel_guide_editor/v8_generation/50k/v8_twin.{jsonl,stats.json,manifest.json}`
+- `/global/scratch/users/kh36969/DL_novel_guide_editor/v8_generation/smoke/v8_smoke_twin.{jsonl,stats.json}`
+
+**V8 negative set — final:**
+
+| mode                  | is_positive | flank target rewrite | conserved rewrite | nc plant |
+|-----------------------|-------------|----------------------|-------------------|----------|
+| none                  | True        | yes (bag-coherent)   | yes               | bag_guide + cons |
+| partial               | False       | yes (subset of sites)| yes (subset)      | bag_guide + cons |
+| scattered             | False       | no (per-site guide)  | no                | N-guide layout   |
+| flank_scattered       | False       | yes (per-site scatter)| yes              | bag_guide + cons |
+| unstructured_nc_full  | False       | yes (bag-coherent)   | no                | bag_guide alone  |
+
+---
+
+## V8 no_alignment negative added — 2026-09-23
+
+**Mode 3 of V8 negatives.** nc = pure random (no plant); flank = raw
+pool (no rewrite, no conserved rewrite). Represents the "unrelated
+transposon" deployment case: a real MGE where nc has no sequence
+relationship to the insertion-site flank.
+
+**V8 final negative set (6 modes total):**
+
+| mode                  | is_pos | conserved rewrite | nc plant | flank position |
+|-----------------------|--------|-------------------|----------|----------------|
+| none (positive)       | True   | yes               | 1 block  | coherent       |
+| partial               | False  | subset            | 1 block  | coherent       |
+| flank_scattered       | False  | yes               | 1 block  | scattered      |
+| unstructured_nc_full  | False  | no                | 1 block  | coherent       |
+| scattered             | False  | no                | 3 guides | coherent       |
+| **no_alignment**      | False  | no                | none     | (raw pool)     |
+
+**rng-consumption alignment.** Bag-level draws (bag_guide, left_cons,
+right_cons, nc_planted_base, nc_noise, bag_center_off) are always
+consumed and simply discarded in no_alignment. Per-site loop draws
+(flank, per_site_center_off, jitter, planted_m) are also consumed.
+Mode-specific branches (`per_site_is_planted = [False] * n_sites`,
+no target-mutation, no conserved rewrite, `nc_planted = nc_planted_base`)
+skip DOWNSTREAM rng calls but do not affect earlier axes — so
+L/planted_m/n_sites/nc_len byte-parity holds across all 6 modes.
+
+**Byte-parity smoke (job 26308595, 1K/mode × 6 modes, seed 0).**
+
+| axis            | byte-identical across 6 modes |
+|-----------------|-------------------------------|
+| guide_L         | YES                           |
+| planted_m       | YES                           |
+| n_sites/bag     | YES                           |
+| nc_len          | YES                           |
+
+**Production 50K corpus.** Generated as job 26307647 (5 modes) +
+26308761 (no_alignment). Six .jsonl files, each 50K bags / 274704
+sites / ~410MB, at `/global/scratch/users/kh36969/DL_novel_guide_editor/
+v8_generation/50k/v8_<mode>.jsonl`.
+
+### Two known limitations (accepted, not fixed)
+
+**(1) GC leakage of "was-flank-rewritten" is 0.53-0.54 AUROC.**
+
+Rewriting the flank target region toward the bag_guide (which is drawn
+at gc_target=0.5) shifts the per-position GC in the target vicinity
+(positions ~40-80) by 0.02-0.034 vs raw pool. no_alignment retains
+the real bacterial ~0.53 GC.
+
+Quantification (job 26308595 smoke, 5488 sites/mode):
+
+| scalar                              | AUROC(no_alignment vs union-others) |
+|-------------------------------------|-------------------------------------|
+| flank[ts-5 : ts+L+5] local GC       | 0.5345                              |
+| flank[40:80] fixed-window GC        | 0.5249                              |
+
+0.53-0.54 is small enough to be treated as "one weak feature among many"
+rather than a decisive label proxy. Not blocking. If it becomes a
+dominant feature in learned attributions, switch guide GC to per-bag
+flank GC (draw bag_guide with `gc=measured_flank_gc` instead of 0.5).
+
+**(2) Long-L discrimination margin shrinks at L=13, 14.**
+
+no_alignment nc peak (bag_guide vs active_nc, max Hamming) per-L:
+
+| L  | no_alignment peak mean | none peak mean | Δ  | m≥8 hit threshold |
+|----|-----------------------|----------------|----|-------------------|
+| 9  | 6.02                  | 9.00           | 3.0 |  (baseline safe)  |
+| 10 | 6.52                  | 10.00          | 3.5 |                   |
+| 11 | 6.96                  | 11.00          | 4.0 |                   |
+| 12 | 7.36                  | 12.00          | 4.6 |                   |
+| 13 | 7.86                  | 13.00          | 5.1 |  (already >8)     |
+| 14 | **8.22**              | 14.00          | 5.8 |  (**exceeds thr**)|
+
+At L=14, no_alignment's background peak mean is 8.22 — above the
+m≥8 hit threshold. Positive (none) mean is 9.62 (from flank-vs-nc
+alignment, R3' table). Real margin at L=14 is ~1.4 counts.
+
+**Consequence to log.** If L=13/14 stratified performance is weak,
+this is the known reason — background is filling the threshold.
+Not a bug; consequence of wide-L design.
+
+### V8 model constants widened
+
+Ls tuple in `model/channel_b/constants.py` extended from `(9,10,11,12)`
+to `(9,10,11,12,13,14)`. MAX_L 12 → 14. CHANNELS grew from 15 to 19:
+added `m_max_L13`, `m_max_L14`, `flank_dev_L13`, `flank_dev_L14`.
+CHANNEL_SCALES for m_max_L* all bumped from 12.0 to 14.0.
+
+`data.py` channel-slot indexing rewritten to compute offsets from
+`len(Ls)` instead of hardcoded `0:4`, `9:13`, etc — so future L-axis
+changes are automatic.
+
+`build_v7_shard.py` now imports `Ls` from model constants (not
+framework `DEFAULT_LS` which is frozen at 9-12).
+
+Structure window in `data.py` still uses `MAX_L` — which now means
+L=14 windows (was L=12). Structure channels' distribution will
+therefore differ from v7-real; verified in mini shard test — no
+crash, values in reasonable range (E_span_win post-scale ~4-5).
+
+**v7-real checkpoint compatibility.** V8 model tensors are 19-channel;
+v7-real checkpoint is 15-channel — shape-incompatible by design. V8
+trains a NEW model from scratch. The v7-real checkpoint at
+`checkpoints/channel_b/v7real_main/best.pt` remains valid for the
+v7-real corpus at git tag `v7-real-frozen`.
+
+### V8 corpora config
+
+`config/channel_b_v8_corpora.json` created with all 6 modes for
+training. Training scripts that consume `--corpora-config` will
+pick up all 6 corpora automatically.
+
+### Post-training pre-registered acceptance checks (V8 first checkpoint)
+
+1. **Per-mode AUROC × n_sites stratified.** Each of the 5 negatives
+   vs positive `none`, split by n_sites ∈ {3..8}. Report CI per cell;
+   check for Simpson-distortion vs pool (see val_auroc_simpson).
+
+2. **no_alignment score vs DDE score (synth-real bridge).**
+   no_alignment score p50 should land within **DDE p50 ± 0.5**
+   (DDE ref p50 = 2.13-2.26 from finding_negtop10_specificity).
+   PASS: no_alignment p50 ∈ [1.63, 2.76]. FAIL: outside window ⇒
+   synth "no alignment" is not the same distribution as real
+   "no alignment" DDE negatives — treat V8 no_alignment mode as
+   incompletely covering the deploy negative distribution.
+
+3. **C3 permutation equivariance + C8 translation invariance.**
+   Rerun existing tests (`model/channel_b/tests/test_permutation_
+   equivariance.py`) against V8 checkpoint. Same numbers as v7-real
+   expected (architecture-level property, unchanged by L widening).
+
+---
+
+## Coord conventions serialize with the corpus — 2026-09-23
+
+**Rule.** Any coordinate convention that enters a corpus (concat spacer
+length, MAX_L at generation time, region-shuffle order, junction
+position, etc.) MUST be written into the record's `generator_metadata`
+at emit time. The loader reads it from the record. **Never derive from
+a loader-side constant** — the two sides evolve at different speeds,
+and silent drift will bake coordinate errors into y targets.
+
+**Companion rule.** The loader MUST run a startup coord-consistency
+check on every corpus it opens: for a sample of planted bags, verify
+`canonical_nc[p*:p*+L] == guide_dna`. Fail loud on mismatch. The
+diagnostic must include: the guide's actual position in the concat,
+the offset from p*, and the generator_metadata coord fields — so the
+operator sees whether the problem is spacer_len, shuffle order, or
+something else.
+
+### Bug that surfaced the rule (2026-09-23)
+
+Symptom: `canonical_nc[p*:p*+L] != guide_dna` for every V8 positive bag
+with `active_noncoding_index == 1`; offset was uniformly +2 bp.
+
+Root cause: `scripts/generator_v5/bag_v7_real.py:614` set
+`_spacer_len = _MAX_L - 1` at generation time, where `_MAX_L` was
+imported from `model/channel_b/constants.py`. When V8 widened `MAX_L`
+from 12 to 14, corpora already written with `_MAX_L=12` (spacer=11)
+were loaded by a loader with `MAX_L=14` (spacer=13). Δ = 2 bp bakes
+into `guide_span_in_active_noncoding` for `active_noncoding_index==1`
+records (~50% of positive bags).
+
+Detection: manual 5-bag inspection (`scripts/audit_v8_p_star_preserved.py`)
+comparing `canonical_nc[p*:p*+L]` to `guide_dna`. Would have been
+caught automatically if the loader startup check was in place — that's
+why the check is now added (see fix items below).
+
+Blast radius on the aborted V8 training run (job 26310037): ~25% of
+the whole 300K-bag corpus had `y` placed 2 bp off (3 planted-y modes:
+none, partial, scattered — each with 50% of bags active_index=1).
+Training was killed at epoch 0 step ~1000.
+
+### Fix items
+
+1. `scripts/generator_v5/bag_v7_real.py` emit block adds two fields to
+   `generator_metadata`:
+     - `concat_spacer_len` — the spacer_len that was used to compute
+       `guide_span_in_active_noncoding`
+     - `max_l_at_generation` — the MAX_L value that determined the above
+2. `model/channel_b/data.py` reads `concat_spacer_len` from
+   `first["generator_metadata"]` when concatenating multi-region nc, via
+   new helper `_read_concat_spacer_len()`. Falls back to `MAX_L - 1`
+   ONLY when the field is missing (legacy v7-real corpora).
+3. `model/channel_b/data.py` `ChannelBDataset.__init__` runs a
+   startup coord check via `_verify_pstar_matches_guide(n_check=10)`
+   after MT preload. On mismatch it raises `RuntimeError` with a
+   diagnostic showing p*, actual guide position, offset, and the
+   generator_metadata fields. Verified live: caught the bad V8 corpus
+   with a `TTACCAGGAGGAGG` vs `CTTTACCAGGAGGA` mismatch and printed
+   the +2 offset diagnostic.
+4. V8 corpora regenerated end-to-end (job 26312203) with the new
+   generator_metadata fields. Old shards (26310016-21) and old
+   corpora (26307647, 26308761) discarded.
+5. This FROZEN entry.
+
+### Rule generalization
+
+- Any label field whose value depends on a loader-side constant is
+  suspect. Audit `bag_v7_real.py` (and future generators) for any
+  reference to a loader constant that flows into an emitted field.
+- The startup check is generic: it verifies the "position → sequence"
+  contract between generator and loader on any coord convention, not
+  just spacer_len. If someone later renames `guide_dna` or reorders
+  regions or changes what `guide_span_in_active_noncoding` refers to,
+  the same check catches it.
+
+---
+
+## V8 flank_bg_identity channel + repeat_flank mode — 2026-09-25
+
+**Trigger.** V8 Gate 2 DDE re-eval revealed a specificity collapse:
+DurrantWT p50 = 6.76 ≈ DDE p50 range [6.42, 6.85], vs V7-real
+reference (DurrantWT 5.10 vs DDE ~2.20, AUROC 0.99). Root cause diagnosed
+via TSD/TIR channel-comparison eval: DDE bags grouped by `insert_md5`
+share near-identical flanks across sites (paralogous/duplicated regions);
+model's coherent-flank_dev veto (learned from `flank_scattered` synth)
+doesn't fire because real DDE has flank_dev ≈ 0 (coherent argmax
+across sites). The model has no signal for "cross-site flank identity"
+and treats DDE as positive.
+
+Fix: new negative mode `repeat_flank` + new input channel
+`flank_bg_identity` teach the model to distinguish "coherent flank_dev
+from independent flanks with a shared plant" (positive) from
+"coherent flank_dev from repeated flanks with any plant" (DDE-like).
+
+### `repeat_flank` mode (bag_v7_real.py)
+
+Draws all per-site flanks + plants + rewrites AS POSITIVE, then AFTER
+the per-site rewriting loop, copies site 0's fully-rewritten flank to
+sites 1..K-1 with per-site mutation rate ~ `U[0, 0.05]`. This produces
+K flanks that are near-identical (0-5% divergence per site) yet each
+still carries the target-region mutation to match `bag_guide` at
+`per_site_planted_m[i]` and both conserved regions matching the bag
+templates. Labeled negative (`per_site_nc_planted_pos = [None]*K` → y=0).
+
+Smoke (job 26429122, 1K bags):
+- pairwise flank similarity: **[min,p50,max] = [0.928, 0.961, 1.000]**, mean 0.961
+- positive comparison: mean 0.278 (baseline for independent real flanks)
+- axis parity (L, planted_m, n_sites, nc_len) byte-identical to positive
+- overwrite happens AFTER those axes are drawn, so parity is preserved
+
+### `flank_bg_identity` channel (constants.py + data.py)
+
+Bag-level scalar broadcast to all (site, position) cells in the input
+tensor. Definition:
+
+    flank_bg_identity = mean over pairs(i,j) of
+       Hamming_similarity(
+         flank_i[:FLANK_BG_EXCL_LO] + flank_i[FLANK_BG_EXCL_HI:],
+         flank_j[:FLANK_BG_EXCL_LO] + flank_j[FLANK_BG_EXCL_HI:])
+
+with `FLANK_BG_EXCL_LO = 30, FLANK_BG_EXCL_HI = 90`. Bag-level (no
+position dependence), scale = 1.0.
+
+**Window derivation** (fixed [30, 90] covers the target-mutation +
+conserved-region rewrite envelope):
+- `target_start` ∈ [1..36, 71..96] from JUNCTION_POS=60 ± CENTER_OFFSET=15
+   ± TARGET_START_JITTER=2
+- `left_conserved_len, right_conserved_len` ∈ U[15, RNA_CONSERVED_LEN_MAX=35]
+- rewrite envelope typically ⊂ [30, 90]
+
+**Coupling warning:** if any of {CENTER_OFFSET, RNA_CONSERVED_LEN_MAX,
+JUNCTION_POS, TARGET_START_JITTER} change in bag_v7_real.py, the window
+must move. Not derived automatically — must be adjusted in
+constants.py. Startup regime check catches drift (see below).
+
+**Validation** (job 26429414, 200 bags per mode, before implementation):
+
+| exclusion strategy | positive (none) | repeat_flank | gap |
+|--------------------|-----------------|--------------|-----|
+| raw whole-flank    | 0.277           | 0.960        | 0.683 |
+| **fixed [30:90]**  | **0.258**       | **0.962**    | **0.704** |
+| pos-dep per-site   | 0.278           | 0.961        | 0.683 |
+
+Fixed [30:90] chosen: largest discrimination gap AND cheapest compute
+(bag-level scalar, 60bp × K² per bag).
+
+**Post-implementation tensor check** (production v8_none corpus):
+- `x[:, :, 19]` on positive bags: 0.25-0.30 ✓
+- `x[:, :, 19]` on repeat_flank smoke bags: **0.9619** ✓
+- Broadcast across positions verified (identical value for all p).
+
+### N_CHANNELS 19 → 20 + cache-key hash
+
+CHANNELS list gained `flank_bg_identity` → N_CHANNELS bumped 19→20.
+The 15-channel v7-real and 19-channel V8-first-training checkpoints
+are shape-incompatible; retraining required.
+
+**SCHEMA_KEY** = 8-char sha1 hash of `"|".join(CHANNELS) + f"|N={N_CHANNELS}"`
+computed at import time. Added to two defense layers:
+- Cache path: `<cache_root>/<source_hash>/schema=<SCHEMA_KEY>/<bag_id>.pt`
+  → different channel list → different subdir → automatic miss + recompute
+- `_bag_content_key` hash: includes SCHEMA_KEY in the sha1 stream
+  → mismatched cache blobs would fail loudly at `__getitem__`
+
+**Together:** channel add/remove/reorder cannot silently re-use a stale
+cache file. Same defense class as the 2026-09-12 source_hash addition
+(from the v7-under-v6r2 cache poisoning), scoped to shape/layout
+contract rather than corpus identity.
+
+### Startup regime check (data.py)
+
+`ChannelBDataset.__init__` now runs `_verify_flank_bg_identity_regime`
+after the coord-check. Samples up to 10 bags with mode ∈ {none,
+repeat_flank}, computes `_compute_flank_bg_identity` on their flanks,
+and requires each value in the per-mode band:
+
+    none:         [0.15, 0.40]   (real bacterial baseline)
+    repeat_flank: [0.85, 1.00]   (near-identical)
+
+Tolerates ≤ 20% offenders. On failure, raises RuntimeError naming the
+offending bags — diagnostic points at either (a) channel wiring bug
+or (b) generator-vs-loader window drift.
+
+Verified live on both smoke corpora + production 50K none corpus.
+
+### Chain to retrain
+
+1. Corpus regen: only `repeat_flank` new (50K, ~5 min) — other 6 modes'
+   corpora unchanged.
+2. Shard build: only `repeat_flank` new (~2.3h wall, parallel).
+3. Config: `config/channel_b_v8_corpora.json` updated to 7 corpora.
+4. Cache: automatically invalidated by SCHEMA_KEY; new 20-channel cache
+   populated via pre-warm (CPU multi-core sbatch on lr7, ~2h) then
+   consumed by training (GPU sbatch on es1).
+5. Train: fresh AdamW + cosine schedule, 8 epochs. Cache-warm on
+   epoch 0 via the pre-warm dependency; epochs 1-7 run at ~45min each.

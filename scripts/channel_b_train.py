@@ -265,6 +265,14 @@ def main() -> int:
                      help="Seed for --random-subsample-n. Fixed for reproducibility.")
     ap.add_argument("--save-every-epoch", action="store_true",
                      help="Save epoch_N.pt in addition to best.pt (for held-out-m gate audit).")
+    ap.add_argument("--resume-from", type=Path, default=None,
+                     help="Path to a checkpoint (e.g. best.pt or epoch_N.pt) whose "
+                          "model weights are loaded before training starts. "
+                          "Optimizer state and epoch counter are NOT restored — "
+                          "the intent is fine-tuning: fresh AdamW + fresh cosine "
+                          "schedule over `--epochs`, warm model weights. Use "
+                          "--epochs 2 (or similar) plus a low --lr (e.g. 5e-5) "
+                          "to continue polishing a converged model.")
     ap.add_argument("--maxm-train-min", type=int, default=0,
                      help="If >0: keep POSITIVE train bags with max(m_at_planted across sites) >= N. "
                           "Negatives (no per-site m_at_planted) are kept unchanged. "
@@ -570,6 +578,34 @@ def main() -> int:
     # 4) model + optim
     model = ChannelBModel(hidden=args.hidden, n_heads=args.n_heads,
                             n_blocks=args.n_blocks).to(device)
+    # --resume-from: load model weights only (no optimizer/scheduler state).
+    # Fine-tuning mode: start a fresh cosine schedule over `--epochs` at
+    # `--lr`; caller is responsible for choosing a low LR for continuation.
+    if args.resume_from is not None:
+        if not args.resume_from.exists():
+            raise FileNotFoundError(f"--resume-from: {args.resume_from} not found")
+        # weights_only=False: our own checkpoint contains a PosixPath in
+        # `args` (from vars(args)), which PyTorch 2.6+'s weights-only safe
+        # loader rejects. Trusted source (we wrote the file this session).
+        ckpt = torch.load(args.resume_from, map_location=device,
+                                 weights_only=False)
+        if "model" not in ckpt:
+            raise RuntimeError(
+                f"--resume-from: {args.resume_from} has no 'model' key; "
+                f"expected a channel_b_train.py checkpoint. Got keys: "
+                f"{list(ckpt.keys())}")
+        missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
+        if missing or unexpected:
+            raise RuntimeError(
+                f"--resume-from: model.load_state_dict mismatch. "
+                f"missing={missing}  unexpected={unexpected}")
+        prev_epoch = ckpt.get("epoch", "?")
+        prev_val = ckpt.get("val_loss", "?")
+        prev_auroc = ckpt.get("val_auroc_proxy", "?")
+        print(f"[chb-train] --resume-from {args.resume_from}: loaded model "
+              f"weights (prev epoch={prev_epoch}, val_loss={prev_val}, "
+              f"val_auroc_proxy={prev_auroc}). Fresh optimizer + schedule.",
+              flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                 weight_decay=args.wd)
     total_steps = args.epochs * max(1, len(train_loader))

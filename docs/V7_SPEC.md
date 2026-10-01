@@ -591,6 +591,40 @@ narrow-distribution training only tests memorization; wide-distribution
 training tests generalization. Durrant measurements are RECORDED ONLY
 (see `scripts/... /v7_2a_durrant_measure.py`).
 
+#### 8.4.1 Sampling scope table (added 2026-09-23 for V8)
+
+Wide-distribution axes above describe **between-bag** variability. Each
+axis has an explicit scope:
+
+| axis | scope | drawn |
+|---|---|---|
+| `target_L` (=bag_guide_L) | BAG-level | one per bag |
+| `bag_guide` (identity + length) | BAG-level | one per bag |
+| `planted_pos` in nc | BAG-level | one per bag |
+| `center_offset` (bag target center around junction) | **BAG-level** (V8 fix) | one per bag |
+| `target_start` per-site jitter | site-level | `U{−TARGET_START_JITTER..+TARGET_START_JITTER}` per site around bag center |
+| `planted_m` | site-level | one per site |
+| `orient` | site-level | per bag orient dist + per-site draw (§2.4) |
+| `nc_len` (per region) | BAG-level (each region) | one per region |
+
+**V8 fix (2026-09-23):** `target_start` is BAG-shared with small
+per-site jitter (`TARGET_START_JITTER = 2` → per-site jitter
+`U{−2..+2}`, per-bag span ≤ 4 bp). This aligns synthetic positives
+with the real-biology observation that IS110/TnpB target sites
+cluster near the transposon junction (Durrant WT median
+`flank_argmax_std_L11 = 1.32 bp` from the 2026-09-23 reference
+measurement).
+
+**Interpretation of "wide distribution":** wide across bags. Within
+one bag, sites converge on the same target-position window (mimicking
+real target-site duplication biology). Pre-V8 code drew per-site
+`target_start` independently from `U[−40, +40]` → 40–80 bp per-bag
+span → mismatched biology.
+
+**Applies to all `negative_mode` values** (twin/partial/scattered
+inherit the same bag-shared + jitter target_start scope so they
+remain distributional twins of positive on this axis).
+
 ### 8.5 Multi-region nc
 
 Each bag emits `noncoding_regions = [nc_region_A, nc_region_B]` (list
@@ -666,6 +700,246 @@ saturation:
 Both metrics show clear positive-vs-twin separation. The model's
 site×position attention path is expected to see the same separation.
 
+### 8.10 Conserved regions — nc-side ONLY (V8.1, 2026-09-27)
+
+V8.0 (2026-09-23) introduced bag-level RNA conserved-region templates
+(`left_conserved`, `right_conserved`; lengths `U{15..35}`, GC-weighted
+random ACGT) and rewrote BOTH nc and flank so that
+`nc = [random][left_cons][bag_guide][right_cons][random]` AND
+`flank[ts-left_len : ts]` and `flank[ts+L : ts+L+right_len]` matched
+the same templates at fraction `U[0.55, 0.75]`.
+
+V8.1 (2026-09-27) REMOVES the flank-side rewriting. Real Durrant WT
+genomic flanks are bacterial DNA and do NOT carry a synthetic 15-35bp
+cons-template match beside the guide binding site. Training v8_main_v3
+on flank-side cons made that synthetic pattern a *label proxy*, and
+Durrant WT scored 0.24 (vs 5.16 on synth positive) despite being real
+IS110 events.
+
+**V8.1 rules:**
+
+- **flank** is real bacterial DNA (`RealFlankPool`) with ONLY the
+  target region `flank[ts : ts+L]` mutated to match `bag_guide` at
+  `per_site_planted_m` matches. No cons-template rewrite anywhere else
+  on the flank.
+- **nc** carries the conserved-region wrap:
+  `nc_planted = [random ACGT] + [left_conserved + bag_guide + right_conserved] + [random ACGT]`,
+  with the plant placed inside via `plant_guide_in_nc`. This is the
+  only place where the bag's cons templates appear.
+- **ts bounds unchanged.** `ts_lo_bound = left_conserved_len`,
+  `ts_hi_bound = FLANK_LEN - L - right_conserved_len` remain in place
+  so target-start distribution is byte-identical to V8.0. Only the
+  flank *content* around the target changes; positions do not.
+
+**Negative-mode implications** — cons wrap is now the primary bit that
+distinguishes nc-side variants:
+
+| mode                   | flank rewrite? | nc plant                              |
+|------------------------|----------------|---------------------------------------|
+| none (positive)        | target only    | `[cons + guide + cons]` (1 block)     |
+| partial                | target on planted sites | `[cons + guide + cons]`      |
+| flank_scattered        | target only, per-site independent center | `[cons + guide + cons]` |
+| repeat_flank           | target only, site 0's flank copied to 1..K-1 with U[0, 0.05] mut | `[cons + guide + cons]` |
+| unstructured_nc_full   | target only    | `bag_guide` alone, NO cons wrap       |
+| scattered              | target only, 3 independent guides | 3 independent guides, NO cons wrap |
+| no_alignment           | none           | pure random, nothing planted          |
+| tsd_negative           | none           | `[TSD + random_middle + TSD]`, no guide |
+
+`unstructured_nc_full` is what teaches the model "positive requires
+cons wrap around the guide in nc" — plant-position is present, guide
+is present, but the cons context is missing. Distinct from
+`no_alignment` (nothing planted) and from `scattered` (multiple guides
+diluting cross-site coherence).
+
+The `rewrite_left` / `rewrite_right` switches from V8.0 are deleted
+(no callers).
+
+### 8.11 V8.4 rebuild — nc = Rfam scaffold, cluster mechanism retired (2026-09-27)
+
+Supersedes §8.10. V8.4 rebuild after two intermediate iterations (V8.2
+Rfam bracket + V8.3 context clusters) that were both retracted:
+
+**Nc construction (all 7 modes):**
+
+`nc_planted = [random ACGT prefix pad] + [rfam_left + bag_guide + rfam_right] + [random ACGT suffix pad]`
+
+- `rfam_left` and `rfam_right` are BYTE-IDENTICAL slices of the SAME
+  contiguous window of a bacterial Rfam ncRNA:
+  `rfam_seq[i : i + left_conserved_len]` and
+  `rfam_seq[i + left_conserved_len + bag_guide_L :
+             i + left_conserved_len + bag_guide_L + right_conserved_len]`.
+  The middle `bag_guide_L` bp of the source window are DISCARDED
+  (replaced by `bag_guide`). The two flanking segments therefore sit
+  at their natural neighboring positions with an L-bp gap where the
+  guide lands — so together they retain the "these two segments
+  originally fold together" property.
+- `nc_planted_base` (the random surround) has length
+  `nc_planted_len = U[NC_LEN_MIN=120, NC_LEN_MAX=250]` (bag-level).
+- Family-BALANCED sampling: each `_sample_rfam_window` call picks a
+  Rfam family uniformly (from the 8 bacterial families), then a
+  sequence within that family. This prevents the dominant family
+  RF00174 (~50% of the flat pool) from monopolizing training and
+  biasing the model toward one family's sequence features.
+
+**Flank (all 7 modes):**
+
+Flank is 120-bp real bacterial DNA from the 50-genome
+`RealFlankPool`, with ONLY the target region `flank[ts : ts + L]`
+mutated toward `bag_guide` at `per_site_planted_m` matches. NO
+off-target rewrite — invariant `_assert_flank_scope` restored to
+strict V8.1 semantics after the V8.3 flank-cluster experiment was
+retracted. (`repeat_flank` remains the sole exempt mode, per its
+whole-flank copy design.)
+
+**Rfam pool (bacterial only):**
+
+8 families, seed FASTAs downloaded once from Rfam CURRENT release
+and cached under `_RFAM_CACHE_DIR`. Post length+ACGT filter
+[100, 250] bp:
+| family | short | ~kept |
+|---|---|---|
+| RF00013 | 6S RNA               | 5150 |
+| RF00050 | FMN riboswitch       | 6353 |
+| RF00080 | yybP-ykoY (Mn2+ SW)  | 1107 |
+| RF00114 | S15 leader           | 796  |
+| RF00174 | Cobalamin (B12 SW)   | 19670 |
+| RF00234 | glmS ribozyme        | 1286 |
+| RF00504 | Glycine riboswitch   | 3969 |
+| RF01055 | MOCO_RNA             | 1406 |
+
+**Negative modes (7 total, V8.4):**
+
+- `none` (positive), `partial`, `scattered`, `flank_scattered`,
+  `no_alignment`, `repeat_flank`, `tsd_negative`.
+- `unstructured_nc_full` REMOVED. At 60-bp bracket scale, a
+  dinuc-shuffled Rfam window is indistinguishable from real Rfam
+  via any candidate structure channel already computed by
+  `compute_features_v2` (ch4-7 max |d| = 0.048; p_ss / dG_open_u1 /
+  max_bpp / pair_entropy all |d| < 0.04, KS < 0.05). Without a
+  channel path to detect it, the mode was a noise negative under any
+  bracket construction.
+
+**Cluster mechanism (V8.3, both flank and nc): RETIRED.**
+
+- Flank-side clusters: rewrote 3-bp templates at bag-drawn positions
+  outside the target window. Removed in V8.4 Step 2. Restored the
+  strict flank-scope invariant.
+- Nc-side clusters: rewrote same templates at guide-anchored nc
+  positions. Without their flank counterparts, they carried no signal
+  path (m_max needs flank↔nc matching bp to elevate). Removed in
+  V8.4 Step 3.
+
+**Structural invariants (unchanged from V8.1):**
+
+- `_assert_flank_scope` (strict V8.1): flank differs from raw pool
+  flank ONLY inside `[ts, ts + L)`. Exempt: `repeat_flank`.
+- `_assert_ts_span`: per-bag `target_start` span ≤ 2 × JITTER = 4.
+  Exempt: `flank_scattered`.
+- `validate_rng_alignment`: per-bag seed, bag-shared signature
+  (`bag_guide_L`, `bag_guide`, cons lengths, nc lengths, orient list,
+  `orient_p_same`) byte-identical across all 7 modes; `left_conserved`
+  and `right_conserved` also byte-identical (V8.4 uses same Rfam
+  window in every mode).
+
+### 8.12 V8.4 mode-design clarifications (2026-09-27 revisions)
+
+Four clarifications to the V8.4 negative-mode design, added after the
+final code review of the 7-mode enum:
+
+1. **`flank_scattered` is a distributional-single-variable negative.**
+   Its nc plant uses the SAME code path as positive (same
+   `[random pad][left_conserved + bag_guide + right_conserved][random pad]`
+   block, planted via the same `plant_guide_in_nc` call, same bag-shared
+   Rfam window). The ONLY intended difference is per-site `ts` scoping:
+   positive uses bag-shared `center = JUNCTION_POS + bag_center_off + jitter`
+   (span ≤ 4), flank_scattered uses per-site independent
+   `center = JUNCTION_POS + per_site_center_off + jitter` (span up to
+   ~30 bp).
+
+   **Byte-equality caveat:** the nc_planted CONTENT is NOT strictly
+   byte-identical between positive and flank_scattered at the same
+   per-bag seed (~24% coincidence rate). `mutate_target_to_match`
+   consumes `rng.sample(mismatch_positions, k)` where
+   `k = target_m − natural_matches`; `natural_matches` depends on
+   `target_seq = flank[ts : ts+L]` and `ts` differs between the two
+   modes → different `k` → different rng consumption → drifted rng
+   state at the subsequent `plant_guide_in_nc` call → different plant
+   position → different nc_planted. Drift is small (a few draws per
+   site) but the plant position is sensitive over ~150 possible slots.
+   The DISTRIBUTION of nc plant properties (block width, cons lengths,
+   nc lengths, plant-block position within nc) is essentially identical
+   across the two modes; only the per-bag content differs.
+
+   The "single-variable" claim is a distributional one, not a byte-
+   equality one. Fixing to strict byte-equality would require
+   decoupling `mutate_target_to_match`'s rng consumption from its
+   input content — deferred, not required for the training goal.
+
+2. **`scattered` has a known nc-composition asymmetry vs positive.**
+   Nc plants 3 independent guides at 3 positions in `nc_planted_base`
+   WITHOUT the Rfam bracket wrap, because the length budget
+   (`3 × 84 = 252 bp` > `NC_LEN_MAX = 250 bp`) forces omission.
+   Consequence: `scattered` differs from positive on TWO axes —
+   per-site guide identity (3 candidates) AND absence of Rfam context
+   around each plant. This is an accepted design limitation, not a
+   bug. If tighter comparability is needed, either shrink the per-guide
+   bracket budget or raise `NC_LEN_MAX`.
+
+3. **`partial` uses a strict ≤30% match ceiling.**
+   `n_planted ~ U{1, max(1, ⌊0.3·K⌋)}`. Concretely for K=3-6:
+   n_planted = 1 (13-33%); for K=7-8: n_planted ∈ {1, 2} (14-29%).
+   Rationale: if 60-70%+ of sites co-plant the same guide, that IS
+   the target system by any reasonable definition, not a negative.
+   The strict cap avoids "borderline positives happening by chance"
+   which would introduce label noise.
+
+4. **Bag-level nc is assumed to be one scaffold.** In real
+   RNA-guided element data, homologous copies of a transposase within
+   a single cluster may each carry their own noncoding region
+   (depending on the encoding operon layout). V8.4 assumes ONE
+   `bag_ncrna_id` per bag (all K sites share nc_planted + nc_noise).
+   The mismatch impact on model generalization is NOT MEASURED and
+   is a known simplification.
+
+### 8.13 K ≥ 3 scope declaration (V8.4, 2026-09-28)
+
+**Channel B REQUIRES bags with K ≥ 3 sites.** Single-copy elements
+(K = 1) are NOT in scope for Channel B and must be routed to Channel A.
+
+**Rationale:**
+- Project rationale from inception: single-site signal is too weak,
+  cross-site aggregation is what gives Channel B its edge over
+  Channel A.
+- `flank_dev_L*` channels (6 of the 20 input channels) are computed
+  as per-site deviation from bag-median flank_argmax. For K = 1, a
+  single site's argmax is trivially the median → deviation = 0 →
+  those 6 channels carry no information. Empirically (job 26517666),
+  zeroing flank_dev collapses v84_none scores from 4.98 to 0.005 —
+  meaning flank_dev is ~100% of the score's dynamic range.
+- `flank_bg_identity` (ch19) is defined as mean pairwise Hamming
+  similarity across a bag's flanks. For K < 2, no pairs exist;
+  data.py hardcodes 0.0 as a neutral default. That default is 0.25
+  below the training-positive distribution (~0.26), pushing K = 1
+  bags out of distribution on that channel too.
+- Result on real Durrant WT (job 26518880):
+  * K1: v84 p50 = −0.004 (correct — no signal to work with)
+  * K3: v84 p50 = 2.31 (borderline)
+  * K5: v84 p50 = 4.35 (near in-distribution)
+  * K8: v84 p50 = 7.54 (strong positive)
+- v8_main_v3 was monotone-DECREASING (3.5 → 0.24) — that model's K=1
+  score of 3.5 was an uncalibrated response to no-signal defaults,
+  NOT a real single-site detection. v84 correctly floors on K=1.
+
+**Deployment path:** two-channel system.
+- K = 1 (single-copy elements) → Channel A (closed-form m ≥ threshold
+  test, ~96% PPV per [[channel-a-documentation]]).
+- K ≥ 3 → Channel B (this model). K = 2 acceptable at reduced
+  confidence; report explicitly.
+
+**Bags with K < 3 must be filtered upstream** or routed to Channel A.
+Do not attempt to interpret Channel B scores on K = 1 bags as either
+positive or negative — the model has no valid input to work with.
+
 ### 8.9 CLI + generator metadata
 
 `python -m scripts.generator_v5.run_generator --v7-real --negative-mode
@@ -689,6 +963,28 @@ site×position attention path is expected to see the same separation.
 
 ## CHANGELOG
 
+- 2026-09-27: **V8.4 — Rfam bacterial ncRNA nc scaffold; V8.3 cluster
+  mechanism (flank + nc) retired; `unstructured_nc_full` retired** (§8.11).
+  Nc `[random pad][rfam_left + guide + rfam_right][random pad]` with
+  left+right from ONE contiguous window of a family-BALANCED-sampled
+  Rfam sequence (8 bacterial families; RF00174 no longer 50%-dominant
+  by construction). Flank restored to strict "target-only rewrite"
+  under the strict V8.1 flank-scope invariant. 7 negative modes total.
+  Superseded intermediate V8.2 (Rfam bracket, no shuffle control) and
+  V8.3 (position-specific context clusters, flank + nc, which turned
+  out to be dominated by mono/di composition confounds under the
+  dinuc-shuffle control gate — see FROZEN V8.4 entry).
+- 2026-09-27: **V8.1 — flank-side conserved-region rewriting REMOVED**
+  (§8.10 added). Flank-side cons was a label proxy — Durrant WT
+  genomic flanks do not carry synthetic 15-35bp cons templates, so
+  v8_main_v3 suppressed Durrant to 0.24 vs 5.16 on synth positive.
+  Cons regions now live on the nc side only. `unstructured_nc_full`
+  updated to plant `bag_guide` alone in nc (no cons wrap), so it
+  remains distinct from positive after the flank change.
+  `rewrite_left` / `rewrite_right` switches deleted. `ts` bounds
+  intentionally kept, so target-start distribution is unchanged.
+  Requires cache rebuild + fresh training (new source hash → new
+  cache dir; SCHEMA_KEY unchanged since channel list didn't move).
 - 2026-09-13: §8 v7-real refactor block added. Real 60+60 genomic
   flanks (RealFlankPool, 50-genome ~164 Mb pool), REVERSED FLOW
   (guide READ from flank, then flank minimally edited toward it),
