@@ -353,17 +353,115 @@ TIR variants. That is a legitimate biological signal, but it is NOT
 an RNA-guided target-recognition signal, which is what v3 was intended
 to find.
 
-**Current CDS03597 status:**
-- "Novel RNA-guided system candidate" — retracted.
-- "Confirmed artifact" — not asserted.
-- "Signal is a within-site self-match, consistent with TIR / IR / overlapping
-  extraction; not a cross-site shared RNA-guided target recognition" —
-  what the current evidence supports.
-- Follow-up required: trace upstream provenance of the 4 supporting
-  sites' nc + flank extractions. If they are from overlapping genomic
-  intervals, the signal is extraction overlap. If they are independent
-  insertions of the same element, the signal is TIR structural. Either
-  way, not an RNA-guided discovery.
+**Current CDS03597 status:** see MSA section below (added 2026-10-11).
+
+**Retraction (within this section):** the "within-site self-match
+artifact" phrasing was too strong. `nc[1:15] = RC(flank[45:59])` is
+exactly the Watson–Crick guide-target complementarity v3 is designed
+to find. Only genome-coord-level evidence (not within-sequence RC
+alone) can distinguish "real cross-site RNA-guided pairing" from
+"extraction overlap" or "TIR structure". The upstream provenance
+check and MSA below are what actually settle the question.
+
+### Upstream provenance of CDS03597's 4 supporting sites
+
+Looked up in `database_v3/insertions.tsv` via `site_id.rstrip('.site')`
+→ `db_id`:
+
+| bag idx | db_id | locus_id | inserted_len | insert_md5 | carriers_derived | decomposition |
+|---:|---|---|---:|---|---:|---|
+| **0** | kpneu.E002228 | deep_kpneu/GCA_012964645.1_k12 B000025 | 1824 | 9c1206b13ceb | 6 | exact |
+| 1 | kpneu.E001788 | - | 1824 | fa06196cdf58 | 2 | - |
+| 2 | kpneu.E001787 | - | 1824 | 4f262155d4a2 | 8 | - |
+| 3 | kpneu.E002229 | - | 1824 | 698cb613dce1 | 8 | - |
+| **4** | kpneu.E001816 | deep_kpneu/GCA_002852325.2_k12 B000016 | 1824 | d6f3ec8d19b6 | 10 | tolerant_alignment |
+| 5 | kpneu.E002331 | - | 1824 | 482436c0028d | 8 | - |
+| **6** | kpneu.E002303 | deep_kpneu/GCA_018394355.1_k12 B000001 | 1824 | d91b3b7b852d | 10 | exact |
+| **7** | kpneu.E002471 | full_kpneu/GCA_023703975.1_k24 B000018 | 1825 | d77c7842e396 | 1 | tolerant_alignment |
+
+- All 8 sites: inserted_len ≈ 1824 bp (±1), 8 **distinct** insert_md5 — 8
+  distinct insertion events of what looks like one mobile-element family.
+- 4 supporting sites are from 4 different kpneu genomes (not clonal
+  duplicates, not overlapping extractions of the same locus).
+- carriers_derived counts (6, 10, 10, 1) show these are independent
+  genomic events with their own carriers.
+
+So the "extraction overlap" hypothesis is ruled out at the per-site
+provenance level — these are four independent insertions.
+
+### MSA of ±100 nt around CDS03597's top cluster (supporting sites only)
+
+Tool: MAFFT (`--auto`) on the 4 supporting sites' ±100 nt nc contexts
+and ±100 nt target contexts. Output stored in `logs/cds03597_align/`.
+
+**nc context MSA (4 supporting sites):**
+
+Three of the four (sites 4, 6, 7) **share a conserved ncRNA scaffold**:
+`gcggcgccgcaagaggcgccgcgtttcagcactatat` aligns column-wise across
+sites 4/6/7. Site 0 does NOT align with the other three — its nc is a
+different sequence family.
+
+Critical caveat: **within the homologous {4, 6, 7} subset, raw
+`nc_pos=1` does not land at the same alignment column across sites.**
+The three ncs differ in their 5′-end length:
+- site 4: nc_pos=1 → MSA column ~1
+- site 6: nc_pos=1 → MSA column ~65
+- site 7: nc_pos=1 → MSA column ~42
+
+So the Phase C cluster at `nc_pos=1 L=14` is grouping hits that sit
+at different scaffold positions within the common nc even for the
+homologous subset. The m=14/14 RC pairing exists per site, but is
+NOT at a shared position in the aligned ncRNA.
+
+**target context MSA (4 supporting sites):**
+
+Sites 4, 6, 7 targets share two blocks: `ccgccatcttccctgcgc` and
+`taaaactccagtcctccagttggttaaactggataaccacca`. Sites 6 and 7 targets
+are nearly identical over most of the 120 bp. **Sites 4/6/7 are three
+independent insertions into the same orthologous target locus in
+three different kpneu genomes.** Site 0's target is unrelated.
+
+### Current status for CDS03597 — three-category classification
+
+Under the reviewer's three-state framework:
+
+- **(1) Coord correspondence verified** — NO. Within the homologous
+  subset {4, 6, 7}, raw nc_pos=1 does not map to the same scaffold
+  column.
+- **(2) Coord correspondence not yet verified** — partially satisfied:
+  we have per-site genome provenance (independent insertions, same
+  element family); we have nc + target MSAs; but we have NOT closed
+  the loop that the per-site RC pairings represent one coherent
+  mechanism.
+- **(3) Artifact confirmed** — NO. Extraction overlap is ruled out
+  by distinct genomes. The per-site RC pairings may still reflect
+  real within-element structural features (TIR-like inverted repeats,
+  element-boundary pairing). Those features would be interesting but
+  are NOT RNA-guided target recognition.
+
+**What the alignment evidence settles:**
+- There IS a real conserved mobile-element family here (sites 4/6/7
+  share nc scaffold + target locus; site 0 is a different element).
+- The v3 cluster at raw `nc_pos=1 L=14 flank_pos=45` is NOT finding a
+  shared guide-target pairing at homologous positions — the raw index
+  mixes different scaffold columns even within the homologous subset.
+- CDS03597 is more honestly described as "a mobile-element family
+  with per-insertion RC pairing between extracted nc and flank, where
+  the raw-index clustering coincidentally groups them; not an RNA-guided
+  target-recognition signal."
+
+**What is NOT yet determined:**
+- Whether the per-insertion RC pairing represents a TIR / element
+  boundary feature (would require element-coord-anchored analysis of
+  each inserted element's boundaries vs the target locus junction).
+- Whether a corrected scaffold-coord clustering (not raw nc_pos) would
+  surface a different real guide-target pairing in sites 4/6/7.
+
+Deliverables in `logs/cds03597_align/`:
+- `nc_context.fna` — ±100 nt nc extracts for the 4 supporting sites
+- `nc_msa.fna` — MAFFT MSA of the above
+- `target_context.fna` — ±100 nt target extracts
+- `target_msa.fna` — MAFFT MSA of the above
 
 ### Status propagated to the other candidates
 
