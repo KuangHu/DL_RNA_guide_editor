@@ -46,14 +46,19 @@ def select_side(left: dict, right: dict) -> tuple[str, dict | None]:
 def same_locus(a: dict, b: dict, overlap_bp: int = 100) -> bool:
     if not isinstance(a, dict) or not isinstance(b, dict):
         return False
-    keys = ('pre_event_genome', 'pre_event_contig')
+    # A locus row's start/end are in the SEED reference, which may differ
+    # from its pre-event carrier. Never mix those coordinates with another
+    # genome's identifier. New evidence supplies the reference explicitly.
+    reference = any(k in record for record in (a, b) for k in ('reference_genome', 'reference_contig'))
+    keys = ('reference_genome', 'reference_contig') if reference else ('pre_event_genome', 'pre_event_contig')
     if any(not isinstance(a.get(k), str) or not a[k].strip() or
            not isinstance(b.get(k), str) or not b[k].strip() for k in keys):
         return False
     if any(a[k] != b[k] for k in keys):
         return False
     try:
-        alo, ahi, blo, bhi = (int(a['start']), int(a['end']), int(b['start']), int(b['end']))
+        lo_key, hi_key = ('reference_start', 'reference_end') if reference else ('start', 'end')
+        alo, ahi, blo, bhi = (int(a[lo_key]), int(a[hi_key]), int(b[lo_key]), int(b[hi_key]))
     except (KeyError, ValueError, TypeError):
         return False
     return alo < ahi and blo < bhi and min(ahi, bhi) - max(alo, blo) >= overlap_bp

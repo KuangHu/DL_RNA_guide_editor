@@ -1,0 +1,41 @@
+{
+  "complete": true,
+  "method": "anchor_split_global_star_v1",
+  "input_jsonl": "adapted_from_audit.jsonl",
+  "input_sha256": "1dbb59bb5703902a81848839af1af9c8d075fb27ce5823de9c75b70937773568",
+  "audit_tsv": "per_site_audit.final.tsv",
+  "audit_sha256": "eb79ac6d02e8ec64f97c6a45f0db7e5be595d2d1a092d3400563463d3b58c931",
+  "provenance_root": "provenance_unpacked",
+  "script_sha256": "cf1f17aeec43c88c4972cfc2d971817303f3619e9f50365d7c04ffefa7d18480",
+  "pyrodigal_version": "3.7.1",
+  "parameters": {
+    "protein_identity": 0.95,
+    "protein_coverage": 0.9,
+    "minimum_protein_aa": 60,
+    "context_identity": 0.7,
+    "context_coverage": 0.7,
+    "minimum_checked_segment_bp": 30,
+    "maximum_context_bp": 10000,
+    "flank_bp": 120,
+    "target_frame": "orf_oriented_empty_flank_midpoint_v1"
+  },
+  "n_bags": 1173,
+  "n_sites": 8697,
+  "n_evidence": 1249,
+  "n_complete_bags": 8,
+  "site_status_counts": {
+    "unresolved_fragment_sources": 48,
+    "unsupported_indel_or_replacement_decomposition": 1420,
+    "context_alignment_quality_failed": 462,
+    "ready": 1201,
+    "copy_requires_actual_carrier_alleles_and_nc": 4128,
+    "no_unique_member_of_anchor_family": 270,
+    "no_unique_conserved_orf_anchor": 431,
+    "no_complete_orf_in_stable_insert": 540,
+    "flank_source_not_unique": 63,
+    "boundary_count_disagreement": 115,
+    "deletion_identity_below_upstream_identity": 19
+  },
+  "hf_revision": "e4657c5f48dee31c6277f77246f13e92fdc01e39",
+  "source_policy": "observed-source locus only; copies need actual carrier alleles and nc"
+}

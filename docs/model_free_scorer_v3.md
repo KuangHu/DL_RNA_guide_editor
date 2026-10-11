@@ -1,3 +1,102 @@
+# Step 2 corpus evidence builder (implemented, 2026-10-11)
+
+`scripts/build_v3_corpus_evidence.py` now generates sequence-bound evidence
+directly from unpacked panel `loci.tsv` / `alleles.fna` files. Runtime:
+NumPy, Biopython, and Pyrodigal (local run: Pyrodigal 3.7.1).
+
+```bash
+python scripts/build_v3_corpus_evidence.py \
+  --jsonl adapted.jsonl --audit per_site_audit.final.tsv \
+  --provenance-root /path/to/unpacked_provenance \
+  --bag-list config/v3_sweep_cids.txt --outdir logs/v3_step2_evidence
+python scripts/run_v3_scorer.py --jsonl adapted.jsonl \
+  --evidence-manifest logs/v3_step2_evidence/verified_evidence.jsonl \
+  --bag-ids "$(paste -sd, config/v3_sweep_cids.txt)" \
+  --outdir logs/v3_step2_scan
+```
+
+The builder checks sources again, rather than trusting the audit's ready
+label. It enumerates the entire deletion-boundary domain, retains every
+globally minimum Hamming solution, checks the upstream equivalent-count,
+and verifies the stored insert MD5 at an optimal boundary. Exact events
+must reproduce the empty allele with zero mismatches. Tolerant events
+are supported only when deleting `inserted_len` leaves the same length as
+the empty allele. Indel/replacement cases and count disagreements stay
+unresolved. The algorithm does not claim to reproduce a gapped upstream
+decomposition objective.
+
+Pyrodigal runs on occupied alleles. Only complete ORFs inside every valid
+insertion interval can anchor an alignment. A family has a unique member
+per participating site, >=95% protein identity and >=90% paired coverage
+against one reference. Family assignment does not use transitive chains
+or motif hits. The anchor with greatest site coverage, then longest
+minimum protein length, is chosen before guide scoring.
+
+The context MSA is an **anchor-split global star MSA**, not MAFFT. Left
+context, anchor CDS, and right context align separately to one reference,
+then insertion columns are merged. Every ungapped row exactly reproduces
+its ORF-oriented occupied context. Segments >=30 bp need >=70% identity
+and >=70% paired coverage; contexts above 10 kb remain unresolved. This
+deterministic MSA remains a provisional evidence method: alternative
+optimal gap placements are not exhaustively propagated into motif-column
+uncertainty. Inspect repeat/indel-rich alignments before treating their
+columns as biological conservation.
+
+Target coordinates use `orf_oriented_empty_flank_midpoint_v1`: a unique,
+exact 120-bp flank source in the empty allele, oriented by the same ORF.
+The midpoint is the extraction frame; it does not resolve an ambiguous
+biological insertion junction. Locus grouping now explicitly uses seed
+reference genome/contig/start/end. Seed-locus coordinates are never paired
+with a different pre-event carrier's genome identifier.
+
+Outputs: `verified_evidence.jsonl`, `site_status.tsv`, `bag_status.json`,
+per-bag context MSA, alignment-quality metrics and anchor proteins. Missing
+sites preserve the original K denominator and prevent a complete-bag call.
+
+Real pilot: CDS03597 has eight mapped sites. Its known nc1/L14 window maps
+to MSA columns [131,145) at site 0, [1917,1931) at site 4,
+[1852,1866) at site 6 and [1875,1889) at site 7. Sites 4/7 fail full-window
+boundary stability. The old four-support perfect-match cluster no longer
+survives; the bag's maximum passing mean match is 0.7777777778, uncalibrated.
+CDS00113 remains incomplete because two sites require indel-aware boundary
+reconstruction. Seven builder regressions plus sixteen integration tests
+pass, including the four real CDS03597 boundary counts.
+
+The local full builder checked all 1173 bags / 8697 sites, emitting 1249
+evidence records (1201 with unique fragment sources). Eight bags have
+complete evidence. These counts
+describe this conservative implementation, not biological negatives.
+No new validated threshold is available: eight complete bags cannot meet
+the calibration analyzer's default minimum train/holdout sample sizes.
+
+The local input was reconstructed from the GitHub audit's exact selected
+site IDs and the HF v5 records, preserving the legacy adapter's first two
+nc fragments / 250-bp truncation and ambiguity sanitization. Its 1173-bag
+scope has no conflicting raw source keys. This scan does not cover omitted
+raw nc regions or recover a unique sequence for the two ambiguous source
+keys outside this scope. The source-side adapter still needs explicit
+sampling/provenance export for independent reproduction without an audit
+selection index.
+
+The completed uncalibrated scan covers all 1173 bags: 8 `ready`, 1165
+`needs_evidence`, 23660 candidate rows (including Phase-D failures),
+15447 rejection rows and 3600 merged rows. Small review tables live in
+`evidence/_step2/`; full sequence/context tables remain local. The full
+scan took 376 seconds; the two changed bags below were subsequently
+rescored. Every reused bag has exactly identical old/new per-site evidence.
+
+**Copy-source correction:** `162_build_bags_v5.py` inherits a copy site's
+nc payload from its parent `source_event`, while extracting/reconstructing
+the target from a different carrier. The downloaded parent-locus allele
+files do not validate that copy's actual occupied sequence or nc payload.
+The builder therefore quarantines all 4128 `.copyNNNN` records in this
+scope as `copy_requires_actual_carrier_alleles_and_nc`. Two initially
+accepted parent-locus matches were withdrawn; only CDS04209 and CDS05682
+had changed evidence and were rescored after the full 1173-bag run.
+Future copy support needs the upstream copy-site coordinates plus actual
+carrier-local occupied sequence and independently extracted nc sequence.
+Do not fuzzy-match those carrier flanks to the parent event's empty allele.
+
 # Main-pipeline integration after 8aeaad4 (2026-10-11)
 
 **Status: implemented; full-corpus recalibration and sweep are pending.**
@@ -91,7 +190,7 @@ record to its original site order/identity. Each `evidence` object contains:
 | `context_lo` | Context start in ORF-oriented occupied coordinates |
 | `valid_insert_intervals` | All valid occupied `[lo,hi)` insertion intervals, not a symmetric approximation |
 | `target` | Common `frame`, `strand`, `origin`, `origin_status="verified"`; `empty_lo`, `empty_hi`, `source_strand`, `frame_strand`, `frame_anchor_empty_pos` |
-| `locus` | `pre_event_genome`, `pre_event_contig`, zero-based half-open `start`, `end` |
+| `locus` | Preferred: `reference_genome`, `reference_contig`, `reference_start`, `reference_end` in one verified seed frame. Legacy: `pre_event_genome`, `pre_event_contig`, `start`, `end` only when these coordinates truly belong to that pre-event genome. All intervals are zero-based half-open. |
 
 The target origin is the canonical coordinate of the FIRST raw flank base.
 For `strand="-"`, canonical coordinates decrease with raw flank offset.

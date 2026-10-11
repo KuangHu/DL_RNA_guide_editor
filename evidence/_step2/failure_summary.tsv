@@ -1,0 +1,12 @@
+status	n_sites
+copy_requires_actual_carrier_alleles_and_nc	4128
+unsupported_indel_or_replacement_decomposition	1420
+ready	1201
+no_complete_orf_in_stable_insert	540
+context_alignment_quality_failed	462
+no_unique_conserved_orf_anchor	431
+no_unique_member_of_anchor_family	270
+boundary_count_disagreement	115
+flank_source_not_unique	63
+unresolved_fragment_sources	48
+deletion_identity_below_upstream_identity	19
