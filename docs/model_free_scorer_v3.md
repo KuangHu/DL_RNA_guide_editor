@@ -366,16 +366,92 @@ Mapping to the review criteria from 2026-10-10:
 | 3 | 支持比例分母固定，重复背景不增加独立支持 | `compute_K_valid` freezes the denominator against site input adequacy only — downstream filtering never shrinks it (`test_phase_a` case 11). Chain-linked clonal flanks collapse to one component (`test_phase_c` case 12, `test_phase_d` case 7). `support_frac_bg_unique = n_support / n_local_bg_groups` as its own ranking column is specified for step 6; current `BgReport` has the primitives for it. | **partial** (support ratio frozen; bg-unique ranking column pending step 6) |
 | 4 | 完整搜索流程经过负对照校准，而不只是 smoke 测试 | 500-bag calibration run (job 26836963, 36:36 wall, 2500 pipeline executions on 4 nulls + real) with thresholds reported above. `min_max_mean_m = 0.89` gives real recall 6.2 % while every strict null's pass-rate is ≤ 0.0 % (null3 at 0.20 % with the documented caveat). | **PASS** (thresholds set; applying them in `candidates_v3.tsv` output is step 6) |
 
+## Step 6 — output schema + applied to top-4
+
+**Driver:** `scripts/run_v3_scorer.py`
+
+Reads a sites JSONL + optional bag-id filter, runs the full Phase A→D
+pipeline per bag, writes two TSVs:
+
+- `candidates_v3.tsv` — one row per `(bag_id, cluster_id)` with all 38
+  schema columns (`nc_pos, L, flank_pos_median, flank_pos_mad, …,
+  guide_at_cluster, mean_guide_H_base, mean_guide_H_dinuc,
+  mean_guide_at_frac, mean_target_H_base, mean_hit_multiplicity_at_nc_pos_L,
+  left_median_identity, right_median_identity, n_sites_edge_*,
+  passes_phase_D, passes_publication_threshold, rank_by_bg_groups,
+  rank_by_mean_m, rank_by_tightness`). Phase-D-failing clusters stay in
+  the file with `passes_phase_D = False` so the full enumeration is
+  auditable; three orthogonal rank columns are populated only for
+  passing rows. **No composite score column** per the plan.
+- `rejections_v3.tsv` — one row per Phase-D-failing cluster with
+  `phase + rejection_reason`.
+
+`support_frac_bg_unique = n_support / n_local_bg_groups` is included,
+closing the remaining gap flagged against criterion 3.
+
+Default publication threshold: `min_max_mean_m = 0.89` from the Phase G
+500-bag calibration.
+
+### Applied to the top-4 banked candidates
+
+Input: 4 bags from `fna_ins_discovery_v5_md_seed2/adapted.jsonl` (K=8 each).
+
+| bag | n_pass_D | n_pub_thr | best mean_m | best cluster (by bg groups) |
+|---|---:|---:|---:|---|
+| **CDS03597** | 807 | **185** | **1.000** | nc=1, L=9, fp=50, mean_m=1.000, 6 bg groups |
+| CDS04337 | 404 | 0 | 0.806 | nc=42, L=9, fp=9, 8 bg groups (below 0.89 bar) |
+| CDS00113 | 71 | 0 | 0.705 | nc=96, L=11, fp=7, 6 bg groups |
+| CDS02973 | 29 | 0 | 0.650 | nc=155, L=10, fp=71, 5 bg groups |
+
+**CDS03597 is the only one that clears the strict v3 threshold.**
+Its 185 passing clusters are offset-variants of a single conserved
+GC-rich motif:
+
+```
+guide_at_cluster  n_pos  flank_pos  L  mean_m  n_support  n_bg
+----------------  -----  ---------  --  ------  ---------  ----
+CCGCGCGCA         9      42         9  1.000   4          4
+CCGCGCGCAGAGCC    9      37        14  1.000   4          4
+CCGCGCGCAGAGC     9      38        13  1.000   4          4
+… (all 185 are L-slide / nc-slide neighbours of the same CCGCGCGCAGAGCC core)
+```
+
+A second strong signal shows up at `rank_by_bg_groups = 1`:
+`TCATTGTTCCGGC` at nc_pos=27, flank_pos=20, mean_m=0.879 (just below
+the 0.89 bar), **7/8 sites support, 6 local bg groups, 6/7 supporting
+sites in RC orientation** — a candidate cross-strand recognition
+motif that would deserve manual inspection.
+
+The other three banked candidates — CDS04337, CDS02973, CDS00113 —
+have top mean_m in the 0.65–0.81 range, inside or just above the strict-null
+upper tail (null1 p99 = 0.778, null2 p99 = 0.822). v3 does not confirm
+them as cross-site target-recognizers at the 1 %-null-pass bar. This
+is a sharper read than v1/v2 produced; it matches the biology that
+not every bag with model signal is RNA-guided.
+
+### Known residual: multi-L / multi-nc_pos deduplication
+
+Phase C deduplicates clusters at the **same `(nc_pos, L)`** within
+`max_offset`, but not across different L values or different nc
+positions pointing at the same physical motif. The 185 passing clusters
+for CDS03597 collapse to **one** physical signal (the CCGCGCGCAGAGCC
+core at nc≈8, flank≈40). This inflates `n_pass_D` and `n_pub_thr` cosmetically
+but does not change the ranking: all 185 rows share the same per-site
+hits. A follow-up pass that merges across `(nc_pos ± margin, L ± 1)`
+when supporting-site sets agree is a step-7 cleanup; current behaviour
+is correct per-row.
+
 ## Status
 
-| step | phase | tests | status |
+| step | phase | tests + run | status |
 |---|---|---|---|
 | 1 | A multi-hit retention | 1, 10, 11 | DONE |
 | 2 | C cluster enumeration + partial D | 6, 9, 12 | DONE |
 | 3 | B motif gates + E2E | primitives, 2, 3, 4, 5, E2E | DONE |
 | 4 | D full + apply_phase_d_gate | 7, 8 permissive, 8 strict, mixed | DONE |
 | 5 | G 4-null calibration + case 1-strict | 500-bag calibration + non-best cluster recovery through A→C | DONE |
-| 6 | ranking + final output schema (`candidates_v3.tsv`, `rejections_v3.tsv`) | apply chosen thresholds to real top-4 and all_candidates | pending |
+| 6 | ranking + final output schema | `scripts/run_v3_scorer.py` + applied to top-4 | DONE |
+| 7 (follow-up) | multi-L / multi-nc_pos dedup; apply to all `all_candidates/` | — | pending |
 
 ### What's not yet done (step 6)
 
@@ -399,6 +475,7 @@ scripts/v5a_framework/
     null_generators.py            # Phase G nulls
     pipeline.py                   # unified A→D runner
 scripts/
+    run_v3_scorer.py              # step 6 output driver
     calibrate_v3_nulls.py         # Phase G driver
     analyze_v3_calib.py           # Phase G post-processor
     model_free_scorer.py          # v1 (unchanged, reference)
@@ -406,7 +483,7 @@ scripts/
 scripts/tests/
     test_phase_a_multi_hit.py
     test_phase_b_motif_gates.py
-    test_phase_c_clustering.py
+    test_phase_c_clustering.py    # cases 1-strict, 6, 9, 12
     test_phase_d_background.py
 sbatch/
     v3_calib_nulls.sbatch
@@ -420,4 +497,13 @@ Run all tests:
 for t in scripts/tests/test_phase_?_*.py; do
     python "$t" || break
 done
+```
+
+Score the top-4 banked candidates:
+
+```
+python scripts/run_v3_scorer.py \
+    --jsonl /scratch/.../fna_ins_discovery_v5_md_seed2/adapted.jsonl \
+    --bag-ids CDS03597,CDS04337,CDS02973,CDS00113 \
+    --outdir logs/v3_top4
 ```
