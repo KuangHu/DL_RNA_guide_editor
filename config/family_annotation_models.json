@@ -1,0 +1,163 @@
+{
+  "snapshot_date": "2026-10-11",
+  "isescan_commit": "146581fa0074a7e9d35c53c543e113bc8899ba51",
+  "files": [
+    {
+      "filename": "clusters.faa.hmm",
+      "url": "https://raw.githubusercontent.com/xiezhq/ISEScan/146581fa0074a7e9d35c53c543e113bc8899ba51/pHMMs/clusters.faa.hmm",
+      "sha256": "f5de1bf92059e39f66490340f1d4e585df3c4b63c79e92c74cf387d23b0007db",
+      "encoding": "plain"
+    },
+    {
+      "filename": "clusters.single.faa",
+      "url": "https://raw.githubusercontent.com/xiezhq/ISEScan/146581fa0074a7e9d35c53c543e113bc8899ba51/pHMMs/clusters.single.faa",
+      "sha256": "da7b2b67f57394cca9c8952c21cfbf5077aaf3aabf38cefd285f0d702e234295",
+      "encoding": "plain"
+    },
+    {
+      "filename": "PF00078.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF00078/?annotation=hmm",
+      "sha256": "b91872fbf0a5cd011c04a0f05b3a4b96e61aa43f01b0fa99156745ffcf508b81",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF00665.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF00665/?annotation=hmm",
+      "sha256": "7a5241f7271e9c206c93b5859dfe10c40761009d42ae0bb7278cca09f61f5712",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF01348.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF01348/?annotation=hmm",
+      "sha256": "d524b0952582938878658426c2f88b931e78d06828ccbf2007cbc6bf7449b7ec",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF01385.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF01385/?annotation=hmm",
+      "sha256": "82748044115cb97be2e3781f49a844ff67143c99f5d59a29f8aedc2cf2ed6391",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF01548.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF01548/?annotation=hmm",
+      "sha256": "9157cdb0918741284ede9371a6af129293c7ea75113819ac1eb9080290245bcb",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF01609.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF01609/?annotation=hmm",
+      "sha256": "56d921acd8ea97a5890733bdc5d4dda418af48d9448323c1943b4d7924879fd8",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF01797.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF01797/?annotation=hmm",
+      "sha256": "297f95e5c9a9db7ef9e1cfcf83123d230d398ed6c6a089442ae38317bf57b414",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF02371.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF02371/?annotation=hmm",
+      "sha256": "6d9e10293e185feafabc1e3e7412711378990bc00681f4c6816b1c7eb0db521d",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF03400.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF03400/?annotation=hmm",
+      "sha256": "2566800d445d16681f160b8f638f99dc5e0576f9d00ebb0f206a8275828bf391",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF03811.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF03811/?annotation=hmm",
+      "sha256": "57868f920d7d8e81bb13d8170f41ba07486b8726561fe86469323a22f77389f1",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF08388.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF08388/?annotation=hmm",
+      "sha256": "70d5115308a0246d264d2c5a76e030599bf9851b1dbacad63762e82dacbb6b84",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF12323.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF12323/?annotation=hmm",
+      "sha256": "78bd8b7370eef19f85b6974df61a2b9a9495e9905edc07a3240f9b599d58b123",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF13276.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF13276/?annotation=hmm",
+      "sha256": "69086d620cb80a9467ffa76dd450dc29d6f16879826b4c22f3915c27c8691d42",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "PF13655.hmm",
+      "url": "https://www.ebi.ac.uk/interpro/api/entry/pfam/PF13655/?annotation=hmm",
+      "sha256": "00b777211832416b239fd3ecfd9fc50fc9eed09cc076b99cbfc59e6f37175e76",
+      "encoding": "optional_gzip"
+    },
+    {
+      "filename": "RF00029.cm",
+      "url": "https://rfam.org/family/RF00029/cm",
+      "sha256": "0681e653be471b1993237a404ec704b4d500f4f39c80f6c0124d10961ae1653f",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF01998.cm",
+      "url": "https://rfam.org/family/RF01998/cm",
+      "sha256": "9fbca4c468406a769c1cfeac6e3eb951040578a187b4bb9e4a68548b6c25b537",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF01999.cm",
+      "url": "https://rfam.org/family/RF01999/cm",
+      "sha256": "2a1cf37ae34568bb986990918278525c76e62482e2a3b785c97c24991ef69103",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF02001.cm",
+      "url": "https://rfam.org/family/RF02001/cm",
+      "sha256": "04309e6fa85bbf6d87514b87a3c88904c4e6e2446decc6564460637344636d8c",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF02003.cm",
+      "url": "https://rfam.org/family/RF02003/cm",
+      "sha256": "e21e80936652fb807cace0e3805213e248de12a64381e0e159685420399d6eab",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF02004.cm",
+      "url": "https://rfam.org/family/RF02004/cm",
+      "sha256": "376af0777a4f10f13df1014627edcc7897fbb51dea6ab637e6f2f28ff0066697",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF02005.cm",
+      "url": "https://rfam.org/family/RF02005/cm",
+      "sha256": "1c3e155e1aadba405bb20b1af9c5c4e1506334784dec48f1d02af85f94d6593f",
+      "encoding": "plain"
+    },
+    {
+      "filename": "RF02012.cm",
+      "url": "https://rfam.org/family/RF02012/cm",
+      "sha256": "a54b6ba795e5820c98f88508a9a01873dc9d5776a678cd3abf3e7436d890e4e3",
+      "encoding": "plain"
+    },
+    {
+      "filename": "uniprot_reviewed_references.fasta",
+      "url": "https://rest.uniprot.org/uniprotkb/stream?query=reviewed%3Atrue+AND+%28protein_name%3Atransposase+OR+protein_name%3Amaturase+OR+protein_name%3A%22REP-associated%22+OR+protein_name%3ATnpB+OR+protein_name%3ACas12+OR+protein_name%3AIscB+OR+protein_name%3AIshB%29&format=fasta",
+      "sha256": "95e3781550dd72f81478e0ceddfb924a9d542fe2c736251d6010878c8d266d7d",
+      "encoding": "plain"
+    },
+    {
+      "filename": "uniprot_reviewed_references.tsv",
+      "url": "https://rest.uniprot.org/uniprotkb/stream?query=reviewed%3Atrue+AND+%28protein_name%3Atransposase+OR+protein_name%3Amaturase+OR+protein_name%3A%22REP-associated%22+OR+protein_name%3ATnpB+OR+protein_name%3ACas12+OR+protein_name%3AIscB+OR+protein_name%3AIshB%29&format=tsv&fields=accession%2Cid%2Cprotein_name%2Cgene_names%2Corganism_name%2Clength%2Cxref_pfam%2Cxref_interpro",
+      "sha256": "a78204217820022adbd85298d43ccee13240c52be6a23798d94bbd6a39122c95",
+      "encoding": "plain"
+    }
+  ],
+  "policy": "Pinned decoded SHA256; if current API changes, fail rather than silently changing annotation models."
+}

@@ -1,0 +1,42 @@
+{
+  "models": [
+    {
+      "name": "RF00029",
+      "sha256": "0681e653be471b1993237a404ec704b4d500f4f39c80f6c0124d10961ae1653f"
+    },
+    {
+      "name": "RF01998",
+      "sha256": "9fbca4c468406a769c1cfeac6e3eb951040578a187b4bb9e4a68548b6c25b537"
+    },
+    {
+      "name": "RF01999",
+      "sha256": "2a1cf37ae34568bb986990918278525c76e62482e2a3b785c97c24991ef69103"
+    },
+    {
+      "name": "RF02001",
+      "sha256": "04309e6fa85bbf6d87514b87a3c88904c4e6e2446decc6564460637344636d8c"
+    },
+    {
+      "name": "RF02003",
+      "sha256": "e21e80936652fb807cace0e3805213e248de12a64381e0e159685420399d6eab"
+    },
+    {
+      "name": "RF02004",
+      "sha256": "376af0777a4f10f13df1014627edcc7897fbb51dea6ab637e6f2f28ff0066697"
+    },
+    {
+      "name": "RF02005",
+      "sha256": "1c3e155e1aadba405bb20b1af9c5c4e1506334784dec48f1d02af85f94d6593f"
+    },
+    {
+      "name": "RF02012",
+      "sha256": "a54b6ba795e5820c98f88508a9a01873dc9d5776a678cd3abf3e7436d890e4e3"
+    }
+  ],
+  "n_reported_hits": 931,
+  "n_inserts_with_hits": 636,
+  "threshold": "Official Rfam model-specific GA cutoff",
+  "sequence_scope": "ALL unique source inserts; both strands; no signal selection",
+  "executable": "../../data/annotation_tools/infernal/bin/cmsearch",
+  "wsl_distro": "Ubuntu"
+}

@@ -1,0 +1,25 @@
+{
+  "complete": true,
+  "hf_revision": "e4657c5f48dee31c6277f77246f13e92fdc01e39",
+  "n_cohort": 86,
+  "n_scanned": 73,
+  "n_reused": 30,
+  "n_new": 43,
+  "annotation_source": "F:\\science\\chatgpt\\RNA_guided_editor\\output\\family_annotation_all6139\\bag_family_annotations.tsv",
+  "annotation_sha256": "aab2a69908488b8b312da85dbdb7ebc6ebffc933eb0109f63cbb885ba7d1db9f",
+  "input_sha256": "41d583b3c977ffd37ea3d3e28befe9191e06e782f5f99d56c7ab4c40a5254726",
+  "raw_score_config_fingerprint": "2a192a19960d83db1ff8b5851ca49ac88df50feb1c247d947a1189060d345659",
+  "background_reproducibility": {
+    "background_rows_compared": 2336,
+    "all_row_fields_identical": true,
+    "n_complete_runs": 2,
+    "no_failure_records_in_complete_runs": true
+  },
+  "n_background_distinct_runs": 2336,
+  "n_complete_background_repeats": 2,
+  "no_binary_threshold": true,
+  "script_sha256": {
+    "family_signal_backgrounds.py": "ff00c20f6bbf95fc7e7f4bb66d1b016ea158278be4e20b3e0cebf40131dfe186",
+    "analyze_family_signal.py": "742251d322fd8119a6c2000db6916b04aee7ecf5575a1775db9c12ae4220017d"
+  }
+}

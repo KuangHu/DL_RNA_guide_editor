@@ -1,0 +1,28 @@
+{
+  "n_bags": 6139,
+  "family_labels": {
+    "IS1": 5,
+    "IS110": 23,
+    "IS200/IS605-TnpA": 4,
+    "IS3": 53,
+    "IS5": 11,
+    "TnpB-like": 5,
+    "UNKNOWN": 6030,
+    "group_II_intron": 8
+  },
+  "clean_control_families": {
+    "IS1": 3,
+    "IS3": 35,
+    "IS5": 8
+  },
+  "manual_review_queue": 144,
+  "policy": "No signal scores read. Pfam curated GA and >=70% model coverage (RVT_1/Domain_X >=60%, checked on full-length LtrA); competitive ISEScan >=20 domain-bit margin; complete dominant ORF; >=90% unique-member consistency with no conflicting supported label. group II requires same-strand downstream D5 plus RT/maturase on one ORF. These are conservative annotation policies, not measured classification accuracy.",
+  "limitations": [
+    "No experimental mechanism inferred for individual bags",
+    "IS200 vs IS605 subtype not forced",
+    "RAYT exclusion based on sparse reviewed references; residual uncertainty possible",
+    "TnpB-like architecture is not an activity assay; Cas12/IscB homolog discrimination may require further references",
+    "Unrecognized, frameshifted or partial proteins stay unresolved",
+    "Source-event annotation does not validate actual carrier-copy sequence"
+  ]
+}

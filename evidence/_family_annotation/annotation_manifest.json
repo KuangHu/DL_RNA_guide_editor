@@ -1,0 +1,27 @@
+{
+  "scope": "All 6139 raw corpus bags; independent of signal rankings",
+  "hf_revision": "e4657c5f48dee31c6277f77246f13e92fdc01e39",
+  "regression_tests_passed": 7,
+  "reference_role_checks": {
+    "expected_role_supported": 9,
+    "abstained": 2,
+    "independent_accuracy_estimate": false
+  },
+  "source_ORF_length_validation": {
+    "labeled_source_events": 35733,
+    "differences_only_terminal_stop": true
+  },
+  "files": {
+    "source_events.tsv": "a28da62c83b0007e5382eb282dd776ff2a0e664380737c3fccd218e34e2c9b26",
+    "proteins.faa": "18ebe99c9d877ea4c6fcb7de052e7bfc0e59627b7b7e541a98521a3d17e5584f",
+    "profile_hits.tsv": "7b5e0ec8ed4847cfbd9fd8a9ff3b80e1b89cc8e34543c0e3aabf04c90ecd6ace",
+    "rna_hits.tsv": "3af97c98249e225a76ce7d9c1e8fb907789d531f72bf91b2f2fab5fa4228d80e",
+    "bag_family_annotations.tsv": "aab2a69908488b8b312da85dbdb7ebc6ebffc933eb0109f63cbb885ba7d1db9f"
+  },
+  "script_sha256": {
+    "build_family_annotation_inputs.py": "7eb745c51408a0e3a462ca7169d784bd077c7c7eadacbb744bd2b2db6f887f7b",
+    "fetch_family_annotation_models.py": "54e44388c5e4f2f59c0803bde83819f2a4995b16ddad2006f2d6af26fb1c9dac",
+    "scan_family_models.py": "11866a8edd4d016cb28a0e3c43d0043c258bc507512689bd12adc7bee2bf93d0",
+    "test_c_cross_family_matrix.py": "792ea9b9d5f0b2dfdd279ab8890687e84e90b38da3c0bc731fa68e3384166329"
+  }
+}

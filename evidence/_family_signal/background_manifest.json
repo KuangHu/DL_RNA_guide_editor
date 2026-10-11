@@ -1,0 +1,59 @@
+{
+  "complete": true,
+  "n_bags": 73,
+  "repeats_per_background": 16,
+  "backgrounds": [
+    "exact_dinuc",
+    "unpaired_same_K"
+  ],
+  "config": {
+    "coordinate_mode": "legacy",
+    "Ls": [
+      9,
+      10,
+      11,
+      12,
+      13,
+      14
+    ],
+    "min_nc_len": null,
+    "min_flank_len": null,
+    "gate": {
+      "homopolymer_frac": 0.5,
+      "period_frac": 0.8,
+      "periods_to_check": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "at_frac_max": 0.75,
+      "h_base_min": 1.3
+    },
+    "max_offset": 5,
+    "min_frac": 0.5,
+    "dedup_jaccard_min": 0.8,
+    "bg": {
+      "margin": 3,
+      "clonal_bg_threshold": 0.85,
+      "min_bg_bp": 20,
+      "min_bg_groups": 3,
+      "require_both_sides": false,
+      "method": "legacy",
+      "min_coverage_ratio": 0.8,
+      "ortho_overlap_bp": 100
+    }
+  },
+  "config_fingerprint": "2a192a19960d83db1ff8b5851ca49ac88df50feb1c247d947a1189060d345659",
+  "score": "maximum mean_m_frac among current Phase D passing clusters, 0 if no candidate; not a biological label",
+  "donor_source": "..\\..\\data\\fna_ins_discovery_v5\\adapted_from_audit.jsonl",
+  "no_threshold": true,
+  "limitations": [
+    "Raw coordinates; copy nc may be inherited",
+    "Exact count shuffle samples randomized Euler trails, not uniform sequences",
+    "Donor bags can contain real signals",
+    "Background perturbations can change local grouping; not a fixed-group conditional test"
+  ],
+  "n_runs": 2336,
+  "elapsed_seconds": 231.26031160354614
+}

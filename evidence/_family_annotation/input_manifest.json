@@ -1,0 +1,13 @@
+{
+  "n_bags_requested": 6139,
+  "n_bags_with_source_sequences": 6139,
+  "n_source_events": 98604,
+  "n_unique_insert_sequences": 83015,
+  "n_gene_occurrences": 153508,
+  "n_unique_proteins": 42993,
+  "n_inserts_without_predicted_orfs": 0,
+  "invalid_source_event_ids": [],
+  "pyrodigal_version": "3.7.1",
+  "scope": "All source events for every requested bag; no signal scores or rankings read.",
+  "sequence_source": "database_v3/insertions.tsv insert_seq, verified length and MD5; source-event sequences do not validate actual carrier-copy sequence."
+}

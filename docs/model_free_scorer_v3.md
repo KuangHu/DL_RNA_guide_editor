@@ -1,3 +1,101 @@
+# Independent family-cohort signal scan (2026-10-11)
+
+Completed the newly annotated cohort: 40 supported target-family/role bags and
+46 clean IS1/IS3/IS5 controls. **73/86** have K>=3 historical adapted inputs;
+13 smaller raw bags stay unscored/unknown. Reused 30 previous exact-input raw
+scans and ran 43 additional bags. Family coverage: IS110 22/23, group II 5/8,
+IS200/IS605-TnpA 3/4, TnpB-like 5/5, IS1 3/3, IS3 27/35, IS5 8/8.
+
+Ran 16 exact-dinucleotide background shuffles and 16 whole-donor-bag pairing
+controls per scored bag (**2,336 distinct background rows**). Exact shuffles
+use randomized Euler trails, preserving counts/length/endpoints; they are not
+uniform draws over every possible shuffle. Unpaired donors have the same K
+and come from a different bag in the historical 4,380-bag pool; they can have
+real signals and are a pairing control, not a guaranteed null. Every condition
+uses the same raw pipeline configuration and maximum passing mean-match
+statistic. No binary cutoff is introduced.
+
+Against the pooled 38 scanned clean controls:
+
+| Family/role | n | Raw AUC | Exact-dinuc excess AUC | Unpaired excess AUC |
+|---|---:|---:|---:|---:|
+| IS110 | 22 | 0.773 | 0.694 | 0.579 |
+| Group II intron | 5 | 0.716 | 0.621 | 0.679 |
+| IS200/IS605-TnpA | 3 | 0.513 | 0.333 | 0.289 |
+| TnpB-like | 5 | 0.429 | 0.426 | 0.474 |
+
+The AUC is a descriptive pairwise ranking probability, with ties worth half.
+Same-K pair-weighted and K=8-only results are also reported. Do not rely on
+equal-stratum macro AUC alone: tiny K strata can dominate it. Bootstrap
+intervals resample bags within this fixed subset and do not establish genome
+event independence. Family distributions overlap; the current single-segment
+9--14 bp / raw-coordinate architecture has **not** achieved general family
+separation. A low TnpA/TnpB-like score does not overturn its family annotation.
+
+The first background attempt aborted on an unexpected tuple hit in Phase B;
+source inspection did not establish a persistent hit cache as the cause. No
+core scorer fix is claimed. A full diagnostic rerun and separate full repeat
+completed without captured failures and matched every field for all 2,336
+keys. No partial rows from the failed attempt are used; the initial isolated
+failure's cause remains unresolved. Three shuffle/AUC checks and seven family
+annotation counterexample checks pass.
+
+Implementation: `family_signal_backgrounds.py`, `analyze_family_signal.py`,
+and `test_family_signal_backgrounds.py`. Compact distributions, per-bag
+features, alignments, background rows, manifests and plot are under
+`evidence/_family_signal/`; full new foreground candidates and repeat outputs
+remain in local `output/family_signal_scan/`.
+
+# Independent all-bag family annotation (2026-10-11)
+
+Completed a score-independent annotation pass over **all 6,139 bags**,
+not the high-score subset. The upstream `database_v3/insertions.tsv` does
+contain full `insert_seq`: all 98,604 relevant source-event sequences passed
+length and MD5 checks. These source sequences support family annotation;
+they do not supply missing actual copy-carrier sequences or coordinates.
+
+83,015 distinct inserts yielded 153,508 ORFs / 42,993 unique proteins.
+Searched all proteins with 14 Pfam GA models and 266 competing multi-member
+ISEScan profiles; searched all inserts on both strands with eight Rfam
+group-II covariance models (Infernal 1.1.5), then checked profile-positive
+proteins against reviewed UniProt references. Model and reference URLs /
+decoded hashes are pinned in `config/family_annotation_models.json`.
+
+Conservative supported dominant-family/role labels: IS110 **23**, group II
+intron **8**, IS200/IS605-TnpA **4**, TnpB-like **5**, IS1 **5**, IS3 **53**,
+IS5 **11**. The stricter clean-control subset is IS1 **3**, IS3 **35**, IS5
+**8** (46 total). Unknown source members, any possible guided-family domain
+(including partial GA hits), or group-II RNA hits exclude a clean control.
+CDS08259 was additionally excluded by this partial-domain guard.
+
+Group II requires ordered RT/maturase on a complete ORF plus same-strand
+downstream Rfam D5; D1-D4 support is retained separately. A known LtrA check
+showed 68% model coverage despite strong GA hits, so RVT_1 / Domain_X use a
+60% coverage floor while other role models use 70%. TnpA/Y1 and TnpB are
+separate roles; short and long ISEScan IS200/IS605 models are not conflated.
+IS200 vs IS605 subtype remains unresolved; TnpB-like is not an activity assay.
+
+Seven counterexample tests passed. Eleven reviewed protein sanity checks
+supported nine expected roles and abstained on two; they are not an
+independent precision/recall estimate. For the 35,733 source events in labeled
+bags, predicted dominant-protein length matches upstream except for zero/one
+terminal-stop character. Dominant selection uses the upstream longest-nt-span
+rule. Family calls require >=90% unique-source-member agreement and no
+conflicting supported family; partial and ambiguous members remain visible.
+
+6,030 bags remain outside the supported labels for this panel (other families
+or insufficient/mixed evidence), with **144** potentially relevant unresolved
+bags queued for review. They are not nonguided negatives. The old 1,173-bag
+scan contains only **three clean controls** (two IS3, one IS5), so it cannot
+serve as a representative family-discrimination benchmark.
+
+Implementation: `build_family_annotation_inputs.py`, `scan_family_models.py`,
+`scan_groupII_rna.py`, `classify_bag_families.py`,
+`fetch_family_annotation_models.py`, and `test_family_annotation_rules.py`.
+Compact results and representative raw profile/RNA evidence are under
+`evidence/_family_annotation/`; full local evidence is in
+`output/family_annotation_all6139/`.
+
 # Current evaluation objective: family separation (2026-10-11)
 
 User-specified objective: continuous sequence-evidence features that distinguish
