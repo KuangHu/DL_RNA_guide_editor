@@ -34,6 +34,7 @@ from scripts.v5a_framework.pipeline import run_bag, PipelineConfig
 from scripts.v5a_framework.motif_gates import (
     shannon_base, at_fraction, longest_run, periodicity_fraction,
 )
+from scripts.v5a_framework.cluster_merging import merge_clusters, MergeConfig
 
 # dinuc entropy helper (not exported from motif_gates; defined inline for the
 # candidates_v3.tsv `mean_guide_H_dinuc` column)
@@ -279,6 +280,48 @@ def main():
             w.writerow({k: r.get(k, "") for k in REJECTION_COLS})
     print(f"\n# wrote {cand_path} ({len(all_cand_rows)} rows)")
     print(f"# wrote {rej_path} ({len(all_rej_rows)} rows)")
+
+    # ---------- step 7: cross-L / cross-nc_pos merging ----------
+    # Merge only clusters that passed Phase D (publication-worthy).  The
+    # un-merged file above remains for audit.
+    merge_cfg = MergeConfig()
+    merged_rows_out: list[dict] = []
+    for bag_id, sites in sorted(bags.items()):
+        # recollect this bag's Phase-D-passing clusters by replaying run_bag
+        # (cheap: one pass per bag), then run merger
+        result = run_bag(bag_id, sites, cfg)
+        if not result.passing:
+            continue
+        merged = merge_clusters(result.passing, merge_cfg)
+        for rank_in_bag, m in enumerate(merged, 1):
+            rep_cluster, rep_bg = m.representative
+            # synthesize a row from the representative, add merge columns
+            row = _row_for_cluster(
+                bag_id, rank_in_bag, rep_cluster, rep_bg, sites,
+                passes_phase_D=True,
+                publication_threshold=args.publication_threshold,
+            )
+            row.update({
+                "n_merged": m.n_merged,
+                "nc_pos_range": f"{m.nc_pos_min}-{m.nc_pos_max}",
+                "L_range":      f"{m.L_min}-{m.L_max}",
+                "flank_pos_range": f"{m.flank_pos_median_min}-{m.flank_pos_median_max}",
+                "support_union": ",".join(str(s) for s in m.support_union),
+            })
+            merged_rows_out.append(row)
+
+    merged_path = args.outdir / "candidates_v3_merged.tsv"
+    MERGED_COLS = (
+        CANDIDATE_COLS
+        + ["n_merged", "nc_pos_range", "L_range",
+            "flank_pos_range", "support_union"]
+    )
+    with merged_path.open("w") as f:
+        w = csv.DictWriter(f, delimiter="\t", fieldnames=MERGED_COLS)
+        w.writeheader()
+        for r in merged_rows_out:
+            w.writerow({k: r.get(k, "") for k in MERGED_COLS})
+    print(f"# wrote {merged_path} ({len(merged_rows_out)} merged rows)")
 
     # Per-bag publication-threshold summary
     print(f"\n## per-bag publication summary (threshold={args.publication_threshold})")
