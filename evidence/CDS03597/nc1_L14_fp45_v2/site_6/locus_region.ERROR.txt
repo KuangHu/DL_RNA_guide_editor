@@ -1,1 +1,0 @@
-Command '['samtools', 'faidx', '/global/scratch/users/kh36969/fna_ins_discovery/genomes/kpneumoniae/GCA_018394355.1.fna', 'CP167484.1:2781548-2783956']' returned non-zero exit status 1.

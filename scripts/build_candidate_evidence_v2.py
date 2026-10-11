@@ -304,8 +304,11 @@ def process_site(site_idx: int, db_id: str, locus_full: str,
                f"{loci_row['locus_id']}_insert_fromAllele_{ins_len}bp",
                insert_from_allele)
 
-    # Attempt to re-derive insert from genome (seed genome)
-    seed_fasta = GENOMES_ROOT / info["species_dir"] / f"{info['assembly']}.fna"
+    # locus_region.fna — the SEED_GENOME (empty-allele carrier) is the
+    # correct source for contig/start/end from loci.tsv. The genome_dir_key
+    # (info['assembly']) is the DISCOVERY carrier that CARRIES the insert,
+    # not necessarily the empty-allele seed. Use loci_row['seed_genome'].
+    seed_fasta = GENOMES_ROOT / info["species_dir"] / f"{loci_row['seed_genome']}.fna"
     locus_region = ""
     if seed_fasta.exists():
         try:
@@ -317,10 +320,11 @@ def process_site(site_idx: int, db_id: str, locus_full: str,
             region_s = f"{loci_row['contig']}:{r_start}-{r_end}"
             locus_region = samtools_faidx(seed_fasta, region_s)
             write_fna(out_dir / "locus_region.fna",
-                       f"{loci_row['contig']}_{r_start}_{r_end}_pad1000",
+                       f"{loci_row['seed_genome']}_{loci_row['contig']}_{r_start}_{r_end}_pad1000",
                        locus_region)
         except Exception as e:
-            (out_dir / "locus_region.ERROR.txt").write_text(f"{e}\n")
+            (out_dir / "locus_region.ERROR.txt").write_text(
+                f"{e}\n(tried: {seed_fasta}  region={region_s})\n")
     else:
         (out_dir / "locus_region.MISSING.txt").write_text(
             f"seed_fasta_not_found: {seed_fasta}\n")
