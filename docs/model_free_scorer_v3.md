@@ -226,6 +226,76 @@ face value.
   exists) or an alignment-free scorer that does not assume shared
   nc_pos.
 
+### Correction to the audit framing (2026-10-11, reviewer note)
+
+The three classes above describe **input structure**, not **homology**.
+A classification of `has_indel` or `has_reorder` does NOT prove the ncs
+are physically incomparable, nor does `coord_comparable` prove shared
+homology — only that lengths and region counts match.
+
+- `has_indel` could be an extraction-boundary difference, truncation,
+  or a real indel; the audit does not distinguish them.
+- `has_reorder` could be an extra appended segment where the leading
+  segment is still homologous (e.g. one site has `[A]`, another has
+  `[A][B]`); a candidate inside `A` would still be comparable.
+
+So the previous "141 of 230 passers sit on unreliable coord" line is
+rephrased: 141 passers come from bags whose nc STRUCTURE differs across
+sites, which does not by itself invalidate any specific candidate — a
+per-candidate homology check is needed. The audit flags WHERE to look,
+it does not substitute for looking.
+
+The 824 "INCOMPARABLE" number remains a legitimate yellow flag but is
+not a verdict. **Do not drop 70 % of bags based on structure alone.**
+
+### Per-candidate homology spot-check (added 2026-10-11)
+
+Tool: `scripts/inspect_bag_nc_provenance.py`. Dumps each site's nc
+segments and the per-site guide window at a specified `(nc_pos, L)`.
+
+**CDS03474** (TnpB-family, coord-comparable, mean_m=0.833 top cluster
+at `nc_pos=5 L=12 fp=95`): all 8 sites have identical seg0,
+`CCGTTACTACAAACCTATAAAATCCTATAAAGAGCTATAAAATTCTCTTAAT`. The guide at
+nc_pos=5 extracts the same sequence from every site. **This is a true
+cross-site shared motif at a homologous position.** The score sits at
+0.833 because of per-site target variation at the flank, not because
+of nc-position artifact.
+
+**CDS03597** (previously claimed top novel, mean_m=1.000 at
+`nc_pos=1 L=14 fp=45`): the per-site seg0 sequences are 20–30 %
+identical to each other. The guide window `nc[1:15]` extracts a
+completely different sequence from each site:
+
+```
+site 0: TCGTCTAACCGCGC
+site 1: ATTAGATCCTTCCT
+site 2: AATACGAAGTAATA
+site 3: ATTAGATCCTTCCT   (= site 1)
+site 4: GTGATGGTGGTTAT
+site 5: GCTAAAACTCCAGT
+site 6: TGAATGAGACAGGC
+site 7: TTTAGCGCAGGGAA
+```
+
+Only sites 1 and 3 share the guide sequence. The reported `n_support=4`
+is likely two pairs of nc-identical sites (1≈3 and e.g. 6≈7). Each
+"supporting site" matches its OWN flank with its OWN nc[1:15] — this
+is 2–4 independent physical events reported as 4 cross-site evidence.
+The `mean_m_frac=1.000` reflects per-site self-matching, NOT a shared
+cross-site motif at a homologous nc position.
+
+**Verdict shift on CDS03597:** The previous "top novel" interpretation
+is unsupported by homology. CDS03597's v3 signal does not represent
+one physical ncRNA–target pairing across sites. It represents
+several independent per-site coincidental matches that happen to land
+at the same raw concat index. Downgrade from "candidate novel RNA-guided"
+to "artifact of raw-nc_pos clustering with non-homologous ncs".
+
+The homology spot-check (not the structural audit) is what settles
+each case. CDS03474 confirms the method CAN detect real shared motifs
+when nc is homologous. CDS03597 shows the method surfaces false
+positives when nc is not.
+
 ### Immediate consequence for the fix queue
 
 Step 3 (Phase C fix) is not sufficient on its own. The step-3 fix
