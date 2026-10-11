@@ -76,6 +76,10 @@ def merge_clusters(items: list[tuple[Cluster, BgReport]],
         absorbed = False
         for grp in groups:
             anchor_cluster, _ = grp[0]
+            if cluster.coordinate_frame != anchor_cluster.coordinate_frame:
+                continue
+            if cluster.coordinate_frame != "legacy_raw" and (cluster.orient_counts.get("rc", 0) > 0) != (anchor_cluster.orient_counts.get("rc", 0) > 0):
+                continue
             if abs(cluster.nc_pos - anchor_cluster.nc_pos) > cfg.nc_offset:
                 continue
             if abs(cluster.flank_pos_median - anchor_cluster.flank_pos_median) > cfg.flank_offset:

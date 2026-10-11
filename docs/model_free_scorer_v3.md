@@ -1,3 +1,163 @@
+# Main-pipeline integration after 8aeaad4 (2026-10-11)
+
+**Status: implemented; full-corpus recalibration and sweep are pending.**
+The older implementation/status logs below describe historical runs. Their
+0.89 threshold does not apply to the verified pipeline.
+
+The default `PipelineConfig()` and `run_v3_scorer.py` now use verified
+coordinates. Old audits explicitly request `coordinate_mode="legacy"`;
+legacy output is labelled `legacy_unverified` and has no formal pass flag.
+
+```mermaid
+flowchart LR
+    A[Raw nc and flank windows] --> B[Retain all hits and reject low complexity]
+    E[Occupied allele / ORF anchor / context MSA / target origin] --> C
+    B --> C[Project complete windows; keep unique stable sources]
+    C --> D[Cluster by MSA column path and canonical target position]
+    D --> F[Group backgrounds by locus and per-side gapped alignment]
+    F --> G[Highest mean match across passing candidates]
+    G --> H[Shared scan and null-calibration statistic]
+```
+
+## Integrated behavior
+
+- `verified_coordinates.py` calls the R1 mapper. Only `status == "ok"`
+  projections enter formal coordinate clustering. It transforms the FULL
+  interval with `[N-hi, N-lo)` for reverse ORF orientation and maps every
+  motif base into the supplied context MSA. Windows must remain inside
+  **every** supplied valid insert interval. An uncertain boundary cannot
+  silently select the repeat copy that gives the best result.
+- Cluster keys include alignment/anchor/target frame, the full motif MSA
+  column path, and canonical relative orientation. The raw concat offset
+  is retained separately in each `Hit`. Target positions may be negative
+  when the declared coordinate origin is the insertion junction.
+- `verified_background.py` compares oriented left and right sides
+  separately. Affine-gap alignment is shared with the Phase-D prototype
+  and uses Biopython's compiled alignment implementation, with cached
+  results for repeated masks. Reported metrics include paired identity,
+  paired bp, indels, and coverage relative to both input lengths.
+- A side needs at least 20 paired bp **and 0.80 coverage of the longer
+  input** before selecting the higher-identity eligible side. This stops a
+  short exact match from masquerading as a fully comparable background.
+  Same reference genome/contig with >=100 bp locus overlap merges first.
+  Uncomparable pairs are conservatively collapsed, tagged
+  `insufficient_comparison`; they cannot increase the distinct-background
+  count. These are local background groups, not independent event counts.
+- Input-adequacy `K_valid` stays frozen before evidence filtering.
+  Missing/invalid evidence or unresolved fragment sources produce
+  `needs_evidence`, not a reliable negative. Such bags remain in the
+  summary and are ineligible for calibration and formal threshold calls.
+- R5 uses `reporting_statistic.bag_statistics()` in both drivers.
+  `max_mean_m` is the maximum across **all** Phase-D-passing clusters.
+  `max_n_support` and `max_n_bg_groups` are their own maxima, not attributes
+  of whichever support-first cluster was selected. Raw precision is kept.
+- `support_frac_bg_unique` is renamed `sites_per_bg_group`; it is an
+  average number of supporting sites per group and may exceed one.
+- There is no automatic 0.89 threshold. An explicit numeric
+  `--publication-threshold` is exploratory only. Formal pass flags require
+  a matching, empirically validated calibration JSON. Analysis rejects
+  old statistic versions, mixed configurations, missing conditions,
+  duplicate rows, and computation errors. It fits the threshold on one
+  bag partition and evaluates it on a disjoint held-out partition.
+  Reported rates are empirical synthetic-null pass rates, not FDR or
+  biological recall. Insufficient eligible sample size cannot yield a
+  validated calibration artifact.
+- Null3 background provenance follows the donor. All conditional nulls
+  preserve flank length, so sequence replacement cannot silently change
+  the coordinate geometry or validity denominator. Null1/2 remain the
+  existing approximate Markov shuffles; they are not exact k-mer shuffles.
+
+## Evidence input contract
+
+The adapted JSONL lacks source intervals, occupied alleles, and ORF/MSA
+evidence. Do not infer these from the dummy training labels or motif hits.
+Supply inline `scorer_evidence`, or a JSONL sidecar with these outer fields:
+
+```json
+{"bag_id":"BAG_ID","site_idx":0,"input_sha256":"HASH","evidence":{}}
+```
+
+`input_sha256` is computed by `verified_coordinates.input_digest(site)`
+from the input sequences plus `site_id` and `transposase_id`, binding the
+record to its original site order/identity. Each `evidence` object contains:
+
+| Field | Meaning |
+|---|---|
+| `occupied` | Original occupied allele sequence |
+| `empty` | Original empty allele sequence; its supplied source interval must exactly reproduce the input flank |
+| `anchor` | `family`, `strand`, `occupied_lo`, `occupied_hi`: the supplied conserved ORF anchor |
+| `alignment_id` | ID of one common ORF-oriented MSA; never reuse for another alignment |
+| `oriented_context_msa` | This site's gapped row; the ungapped row must exactly match its oriented occupied context |
+| `context_lo` | Context start in ORF-oriented occupied coordinates |
+| `valid_insert_intervals` | All valid occupied `[lo,hi)` insertion intervals, not a symmetric approximation |
+| `target` | Common `frame`, `strand`, `origin`, `origin_status="verified"`; `empty_lo`, `empty_hi`, `source_strand`, `frame_strand`, `frame_anchor_empty_pos` |
+| `locus` | `pre_event_genome`, `pre_event_contig`, zero-based half-open `start`, `end` |
+
+The target origin is the canonical coordinate of the FIRST raw flank base.
+For `strand="-"`, canonical coordinates decrease with raw flank offset.
+The frame must be comparable across sites, for example a verified
+insertion-junction frame; absolute genomic positions from different
+genomes are not comparable. Establish the target origin from source/empty
+allele evidence independently of motif selection. The pipeline checks the
+full input flank against the empty-allele source interval and verifies
+`origin = (raw_first_base_in_empty - frame_anchor_empty_pos) * frame_direction`.
+Synthetic null flanks use the validated real template only when the
+calibration driver explicitly enables conditional-null processing;
+the real scanner rejects null evidence. ORF homology, context
+MSA construction and boundary verification remain upstream evidence
+preparation responsibilities; the pipeline checks their sequence/interval
+consistency, it does not claim to have independently established them.
+
+`build_v3_evidence_manifest.py` packages supplied allele/MSA FASTA files
+and metadata into a sequence-bound sidecar. Its JSONL index has `bag_id`,
+`site_idx`, `occupied_fasta`, `empty_fasta`, `msa_fasta`, `msa_record`, and `evidence`
+(the table's remaining fields). File paths are relative to the index.
+
+```bash
+python scripts/build_v3_evidence_manifest.py --jsonl adapted.jsonl \
+  --index verified_sources.jsonl --out verified_evidence.jsonl
+python scripts/run_v3_scorer.py --jsonl adapted.jsonl \
+  --evidence-manifest verified_evidence.jsonl --outdir logs/v3_verified_preview
+python scripts/calibrate_v3_nulls.py --jsonl adapted.jsonl \
+  --evidence-manifest verified_evidence.jsonl --n-bags 500 --seed 2026 \
+  --out logs/v3_verified_null_summary.tsv --details logs/v3_verified_null_details.tsv
+python scripts/analyze_v3_calib.py --details logs/v3_verified_null_details.tsv \
+  --out logs/v3_verified_calibration.json
+python scripts/run_v3_scorer.py --jsonl adapted.jsonl \
+  --evidence-manifest verified_evidence.jsonl \
+  --calibration logs/v3_verified_calibration.json --outdir logs/v3_verified_scan
+```
+
+## Outputs and local validation
+
+`bag_summary.jsonl` preserves every bag, including zero-candidate and
+unresolved bags. `run_manifest.json` records the effective configuration,
+statistic version, evidence path and calibration. Candidate TSVs retain
+per-site raw guide/target sequences, surrounding sequence contexts,
+orientations, raw/mapped coordinates, background alignment metrics and
+merge reasons. Publication flags are empty when uncalibrated/ineligible.
+Each supporting site also has a fixed-anchor, ungapped guide/target
+alignment with up to 30 bp context on each side and exact contiguous
+extension counts. It uses the retained hit; it does not run a new best-hit
+search, cross nc spacers, or classify repeat mechanism. Context evidence
+is diagnostic and does not alter the calibrated score.
+
+The driver writes and ranks one bag at a time, flushing candidate tables
+and the bag summary after each bag. It does not retain the whole sweep's
+candidate/hit/merged-row lists. The run manifest has `complete=false`
+until the sweep finishes. Bags with no evidence skip match enumeration
+and appear as pending; their zero hit counts mean enumeration was skipped.
+The runtime requires NumPy and Biopython.
+
+Sixteen new integration tests cover orientation/offset changes, opposite-element
+ends, boundary flips, missing evidence, per-side coverage, locus grouping,
+uncomparable backgrounds, shared bag maxima, sequence-bound manifests,
+donor provenance and incomplete calibration conditions. CLI smoke runs
+use **synthetic fixtures only**; their calibration artifacts are test
+fixtures and must not be used on the real corpus. The full corpus and its
+verified per-site evidence are not present locally, so no new biological
+ranking, real calibration threshold, or complete sweep is claimed here.
+
 # Model-free scorer v3 — spec and progress log
 
 Date: 2026-10-10 (updated 2026-10-11)

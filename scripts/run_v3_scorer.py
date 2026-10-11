@@ -8,10 +8,12 @@ Runs Phase A→D on a specified set of bags from an adapted.jsonl and emits:
   rejections_v3.tsv : one row per (bag_id, nc_pos, L, cluster_id) that
                       failed any gate, with the reason
 
-A publication threshold `min_max_mean_m` (default 0.89 from Phase G 500-bag
-calibration at target_null_pass=0.01) is applied as a column
-`passes_publication_threshold` — rows that fail stay in `candidates_v3.tsv`
-with that column = False so the full enumeration is auditable.
+Verified coordinates are the default. Use --evidence-manifest for a
+sequence-bound sidecar, or inline scorer_evidence in each JSONL record.
+Missing evidence is reported in bag_summary.jsonl, never as a negative.
+There is no default publication threshold; --calibration consumes a
+matching held-out calibration artifact. An explicit numeric threshold is
+exploratory only. --coordinate-mode legacy is available for old audits.
 
 Usage:
   python scripts/run_v3_scorer.py \
@@ -35,6 +37,11 @@ from scripts.v5a_framework.motif_gates import (
     shannon_base, at_fraction, longest_run, periodicity_fraction,
 )
 from scripts.v5a_framework.cluster_merging import merge_clusters, MergeConfig
+from scripts.v5a_framework.verified_coordinates import attach_manifest
+from scripts.v5a_framework.reporting_statistic import bag_statistics, config_fingerprint, read_calibration, STATISTIC_VERSION, effective_configuration
+from preprocess.alignment import revcomp
+from scripts.nc_coord_mapping import concat_pos_to_frag
+from dataclasses import asdict
 
 # dinuc entropy helper (not exported from motif_gates; defined inline for the
 # candidates_v3.tsv `mean_guide_H_dinuc` column)
@@ -53,7 +60,7 @@ def shannon_dinuc(seq: str) -> float:
 from scripts.v5a_framework.multi_hit_retention import SPACER_N
 
 
-PUBLICATION_THRESHOLD_DEFAULT = 0.89   # Phase G 500-bag at null_pass ≤ 0.01
+PUBLICATION_THRESHOLD_DEFAULT = None  # old 0.89 calibration is invalid for this pipeline
 
 
 CANDIDATE_COLS = [
@@ -64,7 +71,7 @@ CANDIDATE_COLS = [
     "K_valid",
     "n_support_raw", "support_frac_raw",
     "n_local_bg_groups",
-    "support_frac_bg_unique",       # n_support / n_local_bg_groups  (per plan)
+    "sites_per_bg_group",
     "mean_m_frac", "min_m_frac",
     "n_sites_cluster_hit_is_best",
     "n_sites_cluster_hit_rank_1_or_2",
@@ -79,6 +86,9 @@ CANDIDATE_COLS = [
     "passes_phase_D",
     "passes_publication_threshold",
     "rank_by_bg_groups", "rank_by_mean_m", "rank_by_tightness",
+    "bag_status", "coordinate_frame", "nc_msa_columns", "support_sites_json",
+    "background_pairs_json", "background_merge_sources_json",
+    "passes_exploratory_threshold", "calibration_status",
 ]
 
 REJECTION_COLS = [
@@ -110,21 +120,77 @@ def _reconstruct_nc(sites: list[dict], site_idx: int) -> str:
     return nc
 
 
+def _local_anchor_alignment(site, hit, context_bp=30):
+    """Display the selected ungapped anchor with context, never a new best hit.
+
+    Context cannot cross an nc-fragment boundary or spacer. Exact contiguous
+    extension is diagnostic sequence evidence, not an extra score/TIR claim.
+    """
+    fragments=site['inputs']['noncoding_regions']
+    idx,k,spacer=concat_pos_to_frag(fragments,hit.source_nc_pos())
+    if spacer:
+        return None
+    guide=fragments[idx].upper()
+    flank=site['inputs']['flank'].upper()
+    fp=hit.source_flank_pos()
+    if (hit.raw_orient or hit.orient)=='rc':
+        flank=revcomp(flank)
+        fp=len(flank)-fp-hit.L
+    left=min(k,fp,context_bp)
+    right=min(len(guide)-k-hit.L,len(flank)-fp-hit.L,context_bp)
+    a=guide[k-left:k+hit.L+right]
+    b=flank[fp-left:fp+hit.L+right]
+    matches=''.join('|' if x==y and x in 'ACGT' else '.' for x,y in zip(a,b))
+    exact=guide[k:k+hit.L]==flank[fp:fp+hit.L]
+    ext_left=ext_right=0
+    if exact:
+        while k-ext_left-1>=0 and fp-ext_left-1>=0:
+            x,y=guide[k-ext_left-1],flank[fp-ext_left-1]
+            if x!=y or x not in 'ACGT':
+                break
+            ext_left+=1
+        while k+hit.L+ext_right<len(guide) and fp+hit.L+ext_right<len(flank):
+            x,y=guide[k+hit.L+ext_right],flank[fp+hit.L+ext_right]
+            if x!=y or x not in 'ACGT':
+                break
+            ext_right+=1
+    return dict(guide=a,match_line=matches,target_in_guide_orientation=b,
+                core_start=left,core_length=hit.L,core_is_exact=exact,
+                exact_extension_left=ext_left if exact else None,
+                exact_extension_right=ext_right if exact else None,
+                total_exact_contiguous_bp=hit.L+ext_left+ext_right if exact else None)
+
+
 def _row_for_cluster(bag_id: str, cluster_id: int,
                       cluster, bg_report,
                       sites: list[dict],
                       passes_phase_D: bool,
-                      publication_threshold: float):
+                      publication_threshold: float | None,
+                      bag_status: str = "ready",
+                      calibration_validated: bool = False):
     nc_pos, L = cluster.nc_pos, cluster.L
     # per-site guide/target sequences at this cluster
     guide_strs = []
     target_strs = []
+    evidence_rows = []
     for ss in cluster.supporting_sites:
         nc = _reconstruct_nc(sites, ss.site_idx)
         f  = sites[ss.site_idx]["inputs"]["flank"]
-        g  = nc[nc_pos:nc_pos + L] if nc_pos + L <= len(nc) else ""
-        t  = f[ss.chosen_hit.flank_pos:ss.chosen_hit.flank_pos + L] \
-             if ss.chosen_hit.flank_pos + L <= len(f) else ""
+        h = ss.chosen_hit
+        raw_np, raw_fp = h.source_nc_pos(), h.source_flank_pos()
+        g = nc[raw_np:raw_np + L]
+        t = f[raw_fp:raw_fp + L]
+        evidence_rows.append(dict(site_idx=ss.site_idx, raw_nc_pos=raw_np,
+                                  raw_flank_pos=raw_fp, raw_orient=h.raw_orient or h.orient,
+                                  mapped_flank_pos=h.flank_pos, mapped_nc_columns=h.nc_columns,
+                                  guide_raw=g, target_raw=t,
+                                  target_in_guide_orientation=revcomp(t) if (h.raw_orient or h.orient) == 'rc' else t,
+                                  nc_context=nc[max(0, raw_np-30):raw_np+L+30],
+                                  nc_context_start=max(0, raw_np-30),
+                                  target_context=f[max(0, raw_fp-30):raw_fp+L+30],
+                                  target_context_start=max(0, raw_fp-30),
+                                  match_count=h.m, rank_within_site=ss.rank_within_site,
+                                  local_alignment=_local_anchor_alignment(sites[ss.site_idx], h)))
         if g: guide_strs.append(g)
         if t: target_strs.append(t)
 
@@ -150,7 +216,7 @@ def _row_for_cluster(bag_id: str, cluster_id: int,
                      if ss.rank_within_site <= 2)
 
     n_groups = bg_report.n_local_bg_groups
-    support_frac_bg_unique = (cluster.n_support / n_groups) if n_groups else 0.0
+    sites_per_bg_group = (cluster.n_support / n_groups) if n_groups else 0.0
 
     return {
         "bag_id": bag_id, "cluster_id": cluster_id,
@@ -163,8 +229,8 @@ def _row_for_cluster(bag_id: str, cluster_id: int,
         "n_support_raw":    cluster.n_support,
         "support_frac_raw": f"{cluster.support_frac:.3f}",
         "n_local_bg_groups": n_groups,
-        "support_frac_bg_unique": f"{support_frac_bg_unique:.3f}",
-        "mean_m_frac":       f"{cluster.mean_m_frac:.3f}",
+        "sites_per_bg_group": f"{sites_per_bg_group:.3f}",
+        "mean_m_frac":       cluster.mean_m_frac,
         "min_m_frac":        f"{cluster.min_m_frac:.3f}",
         "n_sites_cluster_hit_is_best":    cluster.n_sites_cluster_hit_is_best,
         "n_sites_cluster_hit_rank_1_or_2": n_rank12,
@@ -189,179 +255,131 @@ def _row_for_cluster(bag_id: str, cluster_id: int,
         "orient_rc":  cluster.orient_counts.get("rc",  0),
         "passes_phase_D":    passes_phase_D,
         "passes_publication_threshold": (passes_phase_D and
-                                           cluster.mean_m_frac >= publication_threshold),
+                                           cluster.mean_m_frac >= publication_threshold)
+                                           if calibration_validated and publication_threshold is not None and bag_status == "ready" else "",
+        "passes_exploratory_threshold": (passes_phase_D and cluster.mean_m_frac >= publication_threshold)
+                                           if publication_threshold is not None else "",
+        "bag_status": bag_status,
+        "coordinate_frame": cluster.coordinate_frame,
+        "nc_msa_columns": json.dumps(cluster.nc_columns),
+        "support_sites_json": json.dumps(evidence_rows),
+        "background_pairs_json": json.dumps({f"{i},{j}": v for (i,j),v in bg_report.pairwise_alignment.items()}),
+        "background_merge_sources_json": json.dumps({f"{i},{j}": v for (i,j),v in bg_report.merge_sources.items()}),
+        "calibration_status": "empirically_validated" if calibration_validated else "uncalibrated",
         # ranks filled after all rows gathered
     }
 
 
+def _rank_rows(rows):
+    passing = [r for r in rows if r['passes_phase_D']]
+    for name, key in [
+        ('rank_by_bg_groups', lambda r: (-r['n_local_bg_groups'], -r['mean_m_frac'])),
+        ('rank_by_mean_m', lambda r: -r['mean_m_frac']),
+        ('rank_by_tightness', lambda r: float(r['flank_pos_mad'])),
+    ]:
+        for rank, row in enumerate(sorted(passing, key=key), 1):
+            row[name] = rank
+        for row in rows:
+            row.setdefault(name, '')
+
+
 def main():
+    from contextlib import ExitStack
+    from scripts.v5a_framework.background_alignment import gapped_identity
     ap = argparse.ArgumentParser()
-    ap.add_argument("--jsonl", type=Path, required=True)
-    ap.add_argument("--bag-ids", type=str, default="",
-                      help="comma-separated bag ids; empty = all bags")
-    ap.add_argument("--outdir", type=Path, required=True)
-    ap.add_argument("--publication-threshold", type=float,
-                      default=PUBLICATION_THRESHOLD_DEFAULT)
+    ap.add_argument('--jsonl', type=Path, required=True)
+    ap.add_argument('--bag-ids', default='', help='comma-separated IDs; empty means all bags')
+    ap.add_argument('--outdir', type=Path, required=True)
+    ap.add_argument('--evidence-manifest', type=Path)
+    ap.add_argument('--coordinate-mode', choices=('verified','legacy'), default='verified')
+    ap.add_argument('--calibration', type=Path)
+    ap.add_argument('--publication-threshold', type=float, default=None,
+                    help='exploratory threshold only; formal flags require --calibration')
     args = ap.parse_args()
-    args.outdir.mkdir(parents=True, exist_ok=True)
-
-    bag_ids = set(args.bag_ids.split(",")) if args.bag_ids else None
-    print(f"# loading bags from {args.jsonl}  "
-          f"(filter: {len(bag_ids) if bag_ids else 'ALL'})")
+    if args.publication_threshold is not None and not 0 <= args.publication_threshold <= 1:
+        ap.error('exploratory threshold must be between zero and one')
+    if args.calibration and args.publication_threshold is not None:
+        ap.error('choose either a calibration artifact or an exploratory threshold')
+    bag_ids = {s.strip() for s in args.bag_ids.split(',') if s.strip()} or None
     bags = _bags_from_jsonl(args.jsonl, bag_ids)
-    print(f"# {len(bags)} bags to score")
-
-    cfg = PipelineConfig()
-    all_cand_rows: list[dict] = []
-    all_rej_rows:  list[dict] = []
-    # Cache per-bag passing clusters so the Phase-7 merging pass does NOT
-    # re-run the pipeline (was 2x runtime inefficiency in the first draft).
-    bag_passing: dict[str, list] = {}
+    if not bags:
+        ap.error('no bags found in corpus')
+    if bag_ids and bag_ids - set(bags):
+        ap.error(f'requested bags missing from corpus: {sorted(bag_ids-set(bags))}')
+    cfg = PipelineConfig(coordinate_mode=args.coordinate_mode)
+    attach_manifest(bags, args.evidence_manifest)
+    calibration = read_calibration(args.calibration, cfg) if args.calibration else None
+    threshold = calibration['threshold'] if calibration else args.publication_threshold
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    manifest = dict(config=effective_configuration(cfg), config_fingerprint=config_fingerprint(cfg),
+                    statistic_version=STATISTIC_VERSION, input_jsonl=str(args.jsonl),
+                    evidence_manifest=str(args.evidence_manifest) if args.evidence_manifest else None,
+                    calibration=calibration, exploratory_threshold=threshold if not calibration else None,
+                    complete=False)
+    manifest_path = args.outdir/'run_manifest.json'
+    manifest_path.write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+    merged_cols = CANDIDATE_COLS + ['n_merged','nc_pos_range','L_range','flank_pos_range','support_union']
+    totals = dict(candidates=0,rejections=0,merged=0,ready=0,needs_evidence=0)
     t0 = time.time()
-    for idx, (bag_id, sites) in enumerate(sorted(bags.items()), 1):
-        result = run_bag(bag_id, sites, cfg)
-        bag_passing[bag_id] = result.passing
-        # candidates: all passing + all failing Phase D, kept with pass flag
-        all_clusters = result.passing + result.failing
-        for cid, (cluster, bg_report) in enumerate(all_clusters, 1):
-            row = _row_for_cluster(bag_id, cid, cluster, bg_report,
-                                     sites,
-                                     passes_phase_D=(cluster, bg_report) in result.passing,
-                                     publication_threshold=args.publication_threshold)
-            all_cand_rows.append(row)
-        for cid, (cluster, bg_report) in enumerate(result.failing,
-                                                       1 + len(result.passing)):
-            all_rej_rows.append({
-                "bag_id": bag_id, "cluster_id": cid,
-                "nc_pos": cluster.nc_pos, "L": cluster.L,
-                "flank_pos_median": cluster.flank_pos_median,
-                "K_valid": cluster.K_valid,
-                "n_support_raw": cluster.n_support,
-                "n_local_bg_groups": bg_report.n_local_bg_groups,
-                "mean_m_frac": f"{cluster.mean_m_frac:.3f}",
-                "phase": "D",
-                "rejection_reason": bg_report.rejection_reason or "",
-            })
-        if idx % 25 == 0:
-            dt = time.time() - t0
-            print(f"  [{idx}/{len(bags)}] {dt:.1f}s  "
-                  f"candidates so far: {len(all_cand_rows)}, "
-                  f"rejections: {len(all_rej_rows)}",
-                  flush=True)
+    print(f'# Scoring {len(bags)} bags; mode={args.coordinate_mode}; calibrated={bool(calibration)}',flush=True)
+    with ExitStack() as stack:
+        streams, writers = {}, {}
+        for key, filename, columns in [
+            ('candidates','candidates_v3.tsv',CANDIDATE_COLS),
+            ('rejections','rejections_v3.tsv',REJECTION_COLS),
+            ('merged','candidates_v3_merged.tsv',merged_cols),
+        ]:
+            fh=stack.enter_context((args.outdir/filename).open('w',newline='',encoding='utf-8'))
+            streams[key]=fh
+            writers[key]=csv.DictWriter(fh,delimiter='\t',fieldnames=columns,extrasaction='ignore')
+            writers[key].writeheader()
+        summary_fh=stack.enter_context((args.outdir/'bag_summary.jsonl').open('w',encoding='utf-8'))
+        for number,(bid,sites) in enumerate(sorted(bags.items()),1):
+            gapped_identity.cache_clear()
+            result=run_bag(bid,sites,cfg)
+            stat=bag_statistics(result)
+            rows=[]
+            rejected=[]
+            for cid,(cluster,bg) in enumerate(result.passing+result.failing,1):
+                passes=cid <= len(result.passing)
+                rows.append(_row_for_cluster(bid,cid,cluster,bg,sites,passes,threshold,
+                                             result.status,bool(calibration)))
+                if not passes:
+                    rejected.append(dict(bag_id=bid,cluster_id=cid,nc_pos=cluster.nc_pos,L=cluster.L,
+                                         flank_pos_median=cluster.flank_pos_median,K_valid=cluster.K_valid,
+                                         n_support_raw=cluster.n_support,n_local_bg_groups=bg.n_local_bg_groups,
+                                         mean_m_frac=cluster.mean_m_frac,phase='D',
+                                         rejection_reason=bg.rejection_reason or ''))
+            _rank_rows(rows)
+            merged_rows=[]
+            for rank,m in enumerate(merge_clusters(result.passing,MergeConfig()),1):
+                cluster,bg=m.representative
+                row=_row_for_cluster(bid,rank,cluster,bg,sites,True,threshold,result.status,bool(calibration))
+                row.update(n_merged=m.n_merged,nc_pos_range=f'{m.nc_pos_min}-{m.nc_pos_max}',
+                           L_range=f'{m.L_min}-{m.L_max}',
+                           flank_pos_range=f'{m.flank_pos_median_min}-{m.flank_pos_median_max}',
+                           support_union=','.join(map(str,m.support_union)))
+                merged_rows.append(row)
+            _rank_rows(merged_rows)
+            # Each bag is written once; no global candidate/hit cache is held.
+            for key,rs in [('candidates',rows),('rejections',rejected),('merged',merged_rows)]:
+                writers[key].writerows(rs)
+                streams[key].flush()
+                totals[key]+=len(rs)
+            summary=dict(bag_id=bid,K_valid=result.K_valid,**stat,
+                         coordinate_report=asdict(result.coordinate_report) if result.coordinate_report else None,
+                         n_candidates=len(rows),n_merged=len(merged_rows),
+                         calibration_status='empirically_validated' if calibration else 'uncalibrated')
+            summary_fh.write(json.dumps(summary)+'\n')
+            summary_fh.flush()
+            if result.status in totals:
+                totals[result.status]+=1
+            if number % 25 == 0 or number == len(bags):
+                print(f'  [{number}/{len(bags)}] {time.time()-t0:.1f}s {totals}',flush=True)
+    manifest.update(complete=True,n_bags=len(bags),totals=totals,elapsed_seconds=time.time()-t0)
+    manifest_path.write_text(json.dumps(manifest,indent=2),encoding='utf-8')
+    print('# Wrote candidate, rejection, merged and per-bag evidence tables to',args.outdir)
 
-    # Fill the three orthogonal rank columns per bag
-    by_bag_pass = defaultdict(list)
-    for r in all_cand_rows:
-        if r["passes_phase_D"]:
-            by_bag_pass[r["bag_id"]].append(r)
-    for bag_id, rows in by_bag_pass.items():
-        # rank_by_bg_groups: higher n_local_bg_groups is better
-        for i, r in enumerate(sorted(rows, key=lambda r: (-r["n_local_bg_groups"],
-                                                             -float(r["mean_m_frac"]))), 1):
-            r["rank_by_bg_groups"] = i
-        # rank_by_mean_m: higher mean_m_frac is better
-        for i, r in enumerate(sorted(rows, key=lambda r: -float(r["mean_m_frac"])), 1):
-            r["rank_by_mean_m"] = i
-        # rank_by_tightness: lower MAD is better
-        for i, r in enumerate(sorted(rows, key=lambda r: float(r["flank_pos_mad"])), 1):
-            r["rank_by_tightness"] = i
-    # Default rank columns to empty when the row didn't pass Phase D
-    for r in all_cand_rows:
-        for k in ("rank_by_bg_groups", "rank_by_mean_m", "rank_by_tightness"):
-            r.setdefault(k, "")
-
-    cand_path = args.outdir / "candidates_v3.tsv"
-    rej_path  = args.outdir / "rejections_v3.tsv"
-    with cand_path.open("w") as f:
-        w = csv.DictWriter(f, delimiter="\t", fieldnames=CANDIDATE_COLS)
-        w.writeheader()
-        for r in all_cand_rows:
-            w.writerow({k: r.get(k, "") for k in CANDIDATE_COLS})
-    with rej_path.open("w") as f:
-        w = csv.DictWriter(f, delimiter="\t", fieldnames=REJECTION_COLS)
-        w.writeheader()
-        for r in all_rej_rows:
-            w.writerow({k: r.get(k, "") for k in REJECTION_COLS})
-    print(f"\n# wrote {cand_path} ({len(all_cand_rows)} rows)")
-    print(f"# wrote {rej_path} ({len(all_rej_rows)} rows)")
-
-    # ---------- step 7: cross-L / cross-nc_pos merging ----------
-    # Merge only clusters that passed Phase D (publication-worthy).  The
-    # un-merged file above remains for audit.  Uses cached per-bag passing
-    # clusters from the first pass (no redundant pipeline execution).
-    merge_cfg = MergeConfig()
-    merged_rows_out: list[dict] = []
-    for bag_id, sites in sorted(bags.items()):
-        passing = bag_passing.get(bag_id, [])
-        if not passing:
-            continue
-        merged = merge_clusters(passing, merge_cfg)
-        for rank_in_bag, m in enumerate(merged, 1):
-            rep_cluster, rep_bg = m.representative
-            # synthesize a row from the representative, add merge columns
-            row = _row_for_cluster(
-                bag_id, rank_in_bag, rep_cluster, rep_bg, sites,
-                passes_phase_D=True,
-                publication_threshold=args.publication_threshold,
-            )
-            row.update({
-                "n_merged": m.n_merged,
-                "nc_pos_range": f"{m.nc_pos_min}-{m.nc_pos_max}",
-                "L_range":      f"{m.L_min}-{m.L_max}",
-                "flank_pos_range": f"{m.flank_pos_median_min}-{m.flank_pos_median_max}",
-                "support_union": ",".join(str(s) for s in m.support_union),
-            })
-            merged_rows_out.append(row)
-
-    # Fill the three orthogonal rank columns on the MERGED rows per bag
-    by_bag_merged = defaultdict(list)
-    for r in merged_rows_out:
-        by_bag_merged[r["bag_id"]].append(r)
-    for bag_id, rows in by_bag_merged.items():
-        for i, r in enumerate(sorted(rows, key=lambda r: (-int(r["n_local_bg_groups"]),
-                                                             -float(r["mean_m_frac"]))), 1):
-            r["rank_by_bg_groups"] = i
-        for i, r in enumerate(sorted(rows, key=lambda r: -float(r["mean_m_frac"])), 1):
-            r["rank_by_mean_m"] = i
-        for i, r in enumerate(sorted(rows, key=lambda r: float(r["flank_pos_mad"])), 1):
-            r["rank_by_tightness"] = i
-
-    merged_path = args.outdir / "candidates_v3_merged.tsv"
-    MERGED_COLS = (
-        CANDIDATE_COLS
-        + ["n_merged", "nc_pos_range", "L_range",
-            "flank_pos_range", "support_union"]
-    )
-    with merged_path.open("w") as f:
-        w = csv.DictWriter(f, delimiter="\t", fieldnames=MERGED_COLS)
-        w.writeheader()
-        for r in merged_rows_out:
-            w.writerow({k: r.get(k, "") for k in MERGED_COLS})
-    print(f"# wrote {merged_path} ({len(merged_rows_out)} merged rows)")
-
-    # Per-bag publication-threshold summary
-    print(f"\n## per-bag publication summary (threshold={args.publication_threshold})")
-    print(f"  {'bag_id':<12s}  {'K':>2s}  {'n_pass_D':>8s}  "
-          f"{'n_pub_thr':>9s}  {'best_mean_m':>11s}  "
-          f"{'best_bg_grps':>12s}  {'best_cluster':>12s}")
-    for bag_id in sorted(bags.keys()):
-        rows_bag = [r for r in all_cand_rows if r["bag_id"] == bag_id]
-        rows_pass_D = [r for r in rows_bag if r["passes_phase_D"]]
-        rows_pub = [r for r in rows_pass_D if r["passes_publication_threshold"]]
-        if rows_pass_D:
-            best = max(rows_pass_D, key=lambda r: float(r["mean_m_frac"]))
-            best_desc = (f"nc={best['nc_pos']} L={best['L']} fp={best['flank_pos_median']} "
-                         f"mm={best['mean_m_frac']}")
-        else:
-            best = None; best_desc = "-"
-        best_bg = max(rows_pass_D, key=lambda r: r["n_local_bg_groups"]) if rows_pass_D else None
-        print(f"  {bag_id:<12s}  "
-              f"{rows_bag[0]['K_valid'] if rows_bag else 0:>2d}  "
-              f"{len(rows_pass_D):>8d}  "
-              f"{len(rows_pub):>9d}  "
-              f"{best['mean_m_frac'] if best else '-':>11s}  "
-              f"{best_bg['n_local_bg_groups'] if best_bg else 0:>12d}  "
-              f"{best_desc:>12s}")
 
 
 if __name__ == "__main__":

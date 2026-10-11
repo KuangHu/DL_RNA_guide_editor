@@ -92,89 +92,7 @@ def ortho_groups(site_locus_info: dict[int, dict],
     return sorted(gmap.values(), key=lambda g: g[0])
 
 
-def gapped_identity(a: str, b: str, gap_open: int = -2, gap_ext: int = -1,
-                       match: int = 1, mismatch: int = -1,
-                       ) -> tuple[float, int, int, int, int, int]:
-    """R3: Needleman-Wunsch global alignment, affine gaps.
-    Returns (identity, paired_bp, n_matches, n_mismatches, n_indels,
-             coverage_ratio_denominator).
-
-    - paired_bp = n_matches + n_mismatches (counts positions where BOTH
-      sequences have a base; excludes any gap column).
-    - identity = n_matches / paired_bp (0.0 if paired_bp == 0).
-    - n_indels = count of gap columns in the alignment, both sequences
-      combined.
-    - coverage_ratio_denominator = min(len(a), len(b)) — divide
-      paired_bp by this to get the coverage ratio relative to the
-      shorter input (excludes aligned-length inflation from indels).
-
-    This replaces offset_tolerant_identity. Reviewer's "100 bp same +
-    1 bp internal insertion" test: old 0.640 → new 0.990 at 1 indel.
-
-    Traceback fix (2026-10-11): the previous version picked
-    max(M[i-1][j], IX[i-1][j]) as IX's predecessor; that is wrong when
-    gap_open != gap_ext, because the transition scores differ
-    (M→IX adds gap_open, IX→IX adds gap_ext). The correct
-    predecessor is the one whose score+transition equals IX[i][j].
-    Likewise for IY. Score and indel count are now consistent with
-    the DP optimum.
-    """
-    if not a or not b: return (0.0, 0, 0, 0, 0, min(len(a), len(b)))
-    la, lb = len(a), len(b)
-    NEG = -10**9
-    M  = [[NEG] * (lb + 1) for _ in range(la + 1)]
-    IX = [[NEG] * (lb + 1) for _ in range(la + 1)]
-    IY = [[NEG] * (lb + 1) for _ in range(la + 1)]
-    M[0][0] = 0
-    for i in range(1, la + 1):
-        IX[i][0] = gap_open + (i - 1) * gap_ext
-    for j in range(1, lb + 1):
-        IY[0][j] = gap_open + (j - 1) * gap_ext
-    for i in range(1, la + 1):
-        for j in range(1, lb + 1):
-            s = match if a[i - 1] == b[j - 1] else mismatch
-            M[i][j]  = max(M[i-1][j-1], IX[i-1][j-1], IY[i-1][j-1]) + s
-            IX[i][j] = max(M[i-1][j] + gap_open, IX[i-1][j] + gap_ext)
-            IY[i][j] = max(M[i][j-1] + gap_open, IY[i][j-1] + gap_ext)
-
-    i, j = la, lb
-    final_scores = {"M": M[la][lb], "IX": IX[la][lb], "IY": IY[la][lb]}
-    state = max(final_scores, key=final_scores.get)
-    aligned_len = n_match = n_mismatch = n_indel = 0
-    while i > 0 or j > 0:
-        aligned_len += 1
-        if state == "M":
-            # M[i][j] came from max of (M, IX, IY)[i-1][j-1] + s;
-            # transition cost identical across predecessors, so the
-            # argmax of the three predecessor cells is the predecessor.
-            if a[i-1] == b[j-1]: n_match += 1
-            else:                n_mismatch += 1
-            if i > 0 and j > 0:
-                cands = [("M", M[i-1][j-1]), ("IX", IX[i-1][j-1]),
-                          ("IY", IY[i-1][j-1])]
-                next_state = max(cands, key=lambda t: t[1])[0]
-            else:
-                next_state = "M"
-            i -= 1; j -= 1; state = next_state
-        elif state == "IX":
-            # IX[i][j] came from (M[i-1][j] + gap_open) OR
-            # (IX[i-1][j] + gap_ext). Pick the one that actually equals
-            # IX[i][j], compared with gap-adjusted scores.
-            n_indel += 1
-            from_M  = M[i-1][j]  + gap_open
-            from_IX = IX[i-1][j] + gap_ext
-            next_state = "M" if from_M >= from_IX else "IX"
-            i -= 1; state = next_state
-        else:  # IY
-            n_indel += 1
-            from_M  = M[i][j-1]  + gap_open
-            from_IY = IY[i][j-1] + gap_ext
-            next_state = "M" if from_M >= from_IY else "IY"
-            j -= 1; state = next_state
-    paired_bp = n_match + n_mismatch
-    identity = (n_match / paired_bp) if paired_bp else 0.0
-    cov_denom = min(la, lb)
-    return (identity, paired_bp, n_match, n_mismatch, n_indel, cov_denom)
+from scripts.v5a_framework.background_alignment import gapped_identity
 
 
 # Kept for backward compat; new code should call gapped_identity.
@@ -221,7 +139,7 @@ def main():
             r = json.loads(line)
             if r.get("transposase_id") == args.bag:
                 sites.append(r)
-    cfg = PipelineConfig()
+    cfg = PipelineConfig(coordinate_mode="legacy")
     result = run_bag(args.bag, sites, cfg)
     target = None
     for cl, bg in result.passing + result.failing:

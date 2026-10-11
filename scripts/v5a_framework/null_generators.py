@@ -29,6 +29,7 @@ Shuffle implementation:
 """
 from __future__ import annotations
 import random
+from copy import deepcopy
 from pathlib import Path
 import sys
 from collections import defaultdict
@@ -79,7 +80,13 @@ def _replace_flanks(sites: list[dict], new_flanks: list[str]) -> list[dict]:
         f"flank count mismatch: {len(new_flanks)} vs {len(sites)}")
     out = []
     for s, f in zip(sites, new_flanks):
+        if len(f) != len(s['inputs']['flank']):
+            raise ValueError('conditional null must preserve the flank coordinate geometry')
         new_s = {**s, "inputs": {**s["inputs"], "flank": f}}
+        if 'scorer_evidence' in s:
+            new_s['scorer_evidence'] = deepcopy(s['scorer_evidence'])
+            new_s['scorer_evidence']['conditional_null'] = True
+            new_s['scorer_evidence']['null_original_flank'] = s['inputs']['flank']
         out.append(new_s)
     return out
 
@@ -103,11 +110,18 @@ def null3_unpaired_bag(sites: list[dict],
     If donor_sites has fewer than K flanks, cycle through them.
     """
     rng = random.Random(seed)
-    donor_flanks = [s["inputs"]["flank"] for s in donor_sites]
-    assert donor_flanks, "donor bag has no flanks"
-    rng.shuffle(donor_flanks)
-    new_flanks = [donor_flanks[i % len(donor_flanks)] for i in range(len(sites))]
-    return _replace_flanks(sites, new_flanks)
+    donors = list(enumerate(donor_sites))
+    assert donors, "donor bag has no flanks"
+    rng.shuffle(donors)
+    selected = [donors[i % len(donors)] for i in range(len(sites))]
+    out = _replace_flanks(sites, [s['inputs']['flank'] for _, s in selected])
+    for row, (idx, donor) in zip(out, selected):
+        if 'scorer_evidence' in row:
+            row['scorer_evidence'] = deepcopy(row['scorer_evidence'])
+            # Frames stay fixed under the conditional null; background
+            # provenance follows the donor, never the recipient.
+            row['scorer_evidence']['locus'] = deepcopy(donor.get('scorer_evidence', {}).get('locus', {}))
+    return out
 
 
 def null4_rc_then_shuffle(sites: list[dict], seed: int) -> list[dict]:

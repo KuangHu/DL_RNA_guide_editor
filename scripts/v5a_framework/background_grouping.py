@@ -44,6 +44,9 @@ class BgConfig:
                                        # site has edge_insufficient_both OR
                                        # if both sides insufficient for the
                                        # pair; default = permissive
+    method: str = "legacy"
+    min_coverage_ratio: float = 0.80
+    ortho_overlap_bp: int = 100
 
 
 @dataclass
@@ -56,7 +59,7 @@ class BgGroup:
 
 @dataclass
 class BgReport:
-    cluster_key: tuple[int, int, int]
+    cluster_key: tuple[int, int, float]
     n_local_bg_groups: int
     groups: list[BgGroup]
     pairwise_identities: dict[tuple[int, int], float]       # concat-bg, used for grouping
@@ -76,6 +79,9 @@ class BgReport:
     # gate
     passes_bg_gate: bool
     rejection_reason: str | None
+    pairwise_alignment: dict = field(default_factory=dict)
+    merge_sources: dict = field(default_factory=dict)
+    uncertain_pairs: list = field(default_factory=list)
 
 
 def _mask_boundaries(flank_len: int, flank_pos: int, L: int, margin: int,
@@ -269,12 +275,20 @@ def compute_bg_groups(cluster: Cluster,
 def apply_phase_d_gate(clusters: list[Cluster],
                         flanks_per_site: dict[int, str],
                         cfg: BgConfig = BgConfig(),
+                        locus_per_site: dict | None = None,
                         ) -> tuple[list[tuple[Cluster, BgReport]],
                                     list[tuple[Cluster, BgReport]]]:
     """Return (passing, failing) lists of (cluster, bg_report)."""
     passing: list[tuple[Cluster, BgReport]] = []
     failing: list[tuple[Cluster, BgReport]] = []
     for c in clusters:
+        if cfg.method == "gapped":
+            from scripts.v5a_framework.verified_background import compute_verified_bg
+            br = compute_verified_bg(c, flanks_per_site, locus_per_site or {}, cfg)
+            (passing if br.passes_bg_gate else failing).append((c, br))
+            continue
+        if cfg.method != "legacy":
+            raise ValueError(f"unknown background method: {cfg.method}")
         br = compute_bg_groups(c, flanks_per_site,
                                 margin=cfg.margin,
                                 clonal_bg_threshold=cfg.clonal_bg_threshold,

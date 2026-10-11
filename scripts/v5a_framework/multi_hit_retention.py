@@ -49,12 +49,24 @@ class Hit:
     flank_pos: int   # fwd-flank coord
     m: int           # matching bases out of L
     orient: str      # 'fwd' or 'rc'
+    raw_nc_pos: int | None = None
+    raw_flank_pos: int | None = None
+    raw_orient: str | None = None
+    coordinate_frame: str = "legacy_raw"
+    nc_columns: tuple[int, ...] = ()
+    target_strand: str = "+"
+
+    def source_nc_pos(self) -> int:
+        return self.nc_pos if self.raw_nc_pos is None else self.raw_nc_pos
+
+    def source_flank_pos(self) -> int:
+        return self.flank_pos if self.raw_flank_pos is None else self.raw_flank_pos
 
 
 @dataclass
 class SiteRetention:
     site_idx: int
-    hits_by_nc_pos_L: dict[tuple[int, int], list[Hit]]  # (nc_pos, L) -> hits
+    hits_by_nc_pos_L: dict[tuple, list[Hit]]  # legacy (nc_pos,L), or complete verified window key
     reason_dropped: str | None = None    # None if site contributed
 
 

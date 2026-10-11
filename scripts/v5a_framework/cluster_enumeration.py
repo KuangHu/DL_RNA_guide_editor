@@ -56,6 +56,8 @@ class Cluster:
     n_sites_cluster_hit_is_best: int    # count where rank_within_site == 1
     mean_hit_multiplicity_at_nc_pos_L: float
     orient_counts: dict            # {'fwd': int, 'rc': int}
+    coordinate_frame: str = "legacy_raw"
+    nc_columns: tuple[int, ...] = ()
 
     def key(self) -> tuple[int, int, float]:
         return (self.nc_pos, self.L, self.flank_pos_median)
@@ -68,12 +70,12 @@ def _mad(xs: list[int]) -> float:
     return float(median(abs(x - m) for x in xs))
 
 
-def _per_site_hit_by_nc_pos_L(bag: BagRetention) -> dict[tuple[int, int], dict[int, list[Hit]]]:
+def _per_site_hit_by_nc_pos_L(bag: BagRetention) -> dict[tuple, dict[int, list[Hit]]]:
     """Reindex: (nc_pos, L) -> {site_idx -> hits_sorted_best_first}."""
-    out: dict[tuple[int, int], dict[int, list[Hit]]] = defaultdict(dict)
+    out: dict[tuple, dict[int, list[Hit]]] = defaultdict(dict)
     for sr in bag.retained:
-        for (nc_pos, L), hits in sr.hits_by_nc_pos_L.items():
-            out[(nc_pos, L)][sr.site_idx] = hits
+        for key, hits in sr.hits_by_nc_pos_L.items():
+            out[key][sr.site_idx] = hits
     return out
 
 
@@ -82,7 +84,7 @@ def _ranked_hits(site_hits: list[Hit]) -> list[tuple[int, Hit]]:
     return [(r + 1, h) for r, h in enumerate(site_hits)]
 
 
-def _select_supporters_at_center(center: int,
+def _select_supporters_at_center(center: float,
                                    ranked_by_site: dict[int, list[tuple[int, Hit]]],
                                    ties_for_best_by_site: dict[int, int],
                                    max_offset: int) -> list[SupportingSite]:
@@ -163,13 +165,9 @@ def _iterative_trim_to_median_window(supporters: list[SupportingSite],
             return final, new_fpm
         prev_sig = new_sig
         supporters = rebuilt
-    positions = [ss.chosen_hit.flank_pos for ss in supporters]
-    fpm = float(median(positions))
-    final = [ss for ss in supporters
-              if abs(ss.chosen_hit.flank_pos - fpm) <= max_offset]
-    if len(final) < min_support:
-        return [], -1.0
-    return final, fpm
+    # A final trim can change the median again. An unconverged window has
+    # not met the public invariant and must not be emitted as a cluster.
+    return [], -1.0
 
 
 def enumerate_clusters(bag: BagRetention,
@@ -193,7 +191,8 @@ def enumerate_clusters(bag: BagRetention,
     by_nc_pos_L = _per_site_hit_by_nc_pos_L(bag)
 
     all_clusters: list[Cluster] = []
-    for (nc_pos, L), per_site in by_nc_pos_L.items():
+    for group_key, per_site in by_nc_pos_L.items():
+        nc_pos, L = group_key[:2]
         observed = sorted({h.flank_pos for site_hits in per_site.values()
                             for h in site_hits})
         if not observed:
@@ -209,7 +208,7 @@ def enumerate_clusters(bag: BagRetention,
         # P2b bug-1 fix: enumerate EVERY integer center in [min, max].
         centers = range(observed[0], observed[-1] + 1)
         candidate_clusters: list[Cluster] = []
-        seen_centers: set[int] = set()
+        seen_centers: set[tuple] = set()
         for center in centers:
             supporters = _select_supporters_at_center(
                 center, ranked_by_site, ties_for_best_by_site, max_offset)
@@ -219,7 +218,7 @@ def enumerate_clusters(bag: BagRetention,
             supporters, fpm = _iterative_trim_to_median_window(
                 supporters, max_offset, min_support,
                 ranked_by_site, ties_for_best_by_site)
-            if len(supporters) < min_support or fpm < 0:
+            if len(supporters) < min_support:
                 continue
             # Dedup identical cluster signatures by (median, support set)
             key = (fpm, frozenset(ss.site_idx for ss in supporters))
@@ -251,6 +250,8 @@ def enumerate_clusters(bag: BagRetention,
                 n_sites_cluster_hit_is_best=n_best,
                 mean_hit_multiplicity_at_nc_pos_L=mean_mult,
                 orient_counts=orient_counts,
+                coordinate_frame=supporters[0].chosen_hit.coordinate_frame,
+                nc_columns=supporters[0].chosen_hit.nc_columns,
             ))
 
         # Dedup bleed-through: candidates at nearby offsets sharing supports

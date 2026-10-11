@@ -134,7 +134,7 @@ def main():
             r = json.loads(line)
             if r.get("transposase_id") == args.bag:
                 sites.append(r)
-    cfg = PipelineConfig()
+    cfg = PipelineConfig(coordinate_mode="legacy")
     result = run_bag(args.bag, sites, cfg)
     cl, bg = None, None
     for ccl, cbg in result.passing + result.failing:

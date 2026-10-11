@@ -32,6 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.v5a_framework.pipeline import run_bag, PipelineConfig
+from scripts.v5a_framework.reporting_statistic import bag_statistics, config_fingerprint, STATISTIC_VERSION
+from scripts.v5a_framework.verified_coordinates import attach_manifest
 from scripts.v5a_framework.null_generators import (
     null1_dinuc_shuffle, null2_kmer_shuffle, null3_unpaired_bag,
     null4_rc_then_shuffle,
@@ -75,6 +77,8 @@ def mutate_bag(sites, cond: str, donor_sites, seed: int):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jsonl", type=Path, required=True)
+    ap.add_argument("--evidence-manifest", type=Path)
+    ap.add_argument("--coordinate-mode", choices=("verified", "legacy"), default="verified")
     ap.add_argument("--n-bags", type=int, default=500)
     ap.add_argument("--seed", type=int, default=2026)
     ap.add_argument("--out", type=Path, required=True)
@@ -82,11 +86,14 @@ def main():
     ap.add_argument("--per-condition-top", type=int, default=100)
     args = ap.parse_args()
 
-    cfg = PipelineConfig()
+    cfg = PipelineConfig(coordinate_mode=args.coordinate_mode)
     print(f"# loading bags from {args.jsonl}")
     bags, all_bags_dict = load_jsonl_bags(args.jsonl, max_bags=args.n_bags,
                                            seed=args.seed)
     bag_ids_pool = list(all_bags_dict.keys())
+    attach_manifest(all_bags_dict, args.evidence_manifest)
+    if len(bag_ids_pool) < 2:
+        ap.error("null3 requires at least two distinct bags")
     print(f"# sampled {len(bags)} bags (pool size: {len(bag_ids_pool)})")
 
     details_rows: list[dict] = []
@@ -104,33 +111,24 @@ def main():
         for cond in CONDITIONS:
             sites = mutate_bag(raw, cond, donor_sites, seed=args.seed + i * 7)
             try:
-                result = run_bag(bag_id, sites, cfg)
+                result = run_bag(bag_id, sites, cfg, conditional_null=cond != "real")
             except Exception as e:
                 details_rows.append(dict(bag_id=bag_id, cond=cond,
                                            K_valid=0, n_passing=0,
                                            max_n_support=0, max_mean_m=0.0,
-                                           max_n_bg_groups=0, err=str(e)[:120]))
+                                           max_n_bg_groups=0, err=str(e)[:120],
+                                           eligible=False, status="error",
+                                           statistic_version=STATISTIC_VERSION,
+                                           config_fingerprint=config_fingerprint(cfg)))
                 continue
             n_pass = len(result.passing)
-            if result.passing:
-                best = max(result.passing,
-                            key=lambda cb: (cb[0].n_support, cb[0].mean_m_frac))
-                best_cluster, best_bg = best
-                max_support = best_cluster.n_support
-                max_mean_m = best_cluster.mean_m_frac
-                max_bg_groups = best_bg.n_local_bg_groups
-                best_m_at_top = int(best_cluster.mean_m_frac * best_cluster.L + 0.5)
-                best_L = best_cluster.L
-            else:
-                max_support = 0; max_mean_m = 0.0; max_bg_groups = 0
-                best_m_at_top = 0; best_L = 0
+            stat = bag_statistics(result)
             details_rows.append(dict(
                 bag_id=bag_id, cond=cond, K_valid=result.K_valid,
-                n_passing=n_pass, max_n_support=max_support,
-                max_mean_m=max_mean_m, max_n_bg_groups=max_bg_groups,
-                best_L=best_L, best_m_at_top=best_m_at_top,
+                **stat, config_fingerprint=config_fingerprint(cfg),
             ))
-            per_cond_bagscores[cond].append((bag_id, n_pass, max_mean_m))
+            if stat['eligible']:
+                per_cond_bagscores[cond].append((bag_id, n_pass, stat['max_mean_m']))
         if i % 25 == 0:
             dt = time.time() - t0
             rate = i / dt
@@ -142,7 +140,8 @@ def main():
     if args.details:
         args.details.parent.mkdir(parents=True, exist_ok=True)
         cols = ["bag_id","cond","K_valid","n_passing","max_n_support",
-                "max_mean_m","max_n_bg_groups","best_L","best_m_at_top","err"]
+                "max_mean_m","max_n_bg_groups","best_L","best_m_at_top","err",
+                "eligible","status","statistic_version","config_fingerprint"]
         with args.details.open("w") as f:
             w = csv.DictWriter(f, delimiter="\t", fieldnames=cols)
             w.writeheader()
@@ -153,7 +152,7 @@ def main():
     args.out.parent.mkdir(parents=True, exist_ok=True)
     summary_rows = []
     for cond in CONDITIONS:
-        rs = [r for r in details_rows if r["cond"] == cond and "err" not in r]
+        rs = [r for r in details_rows if r["cond"] == cond and not r.get("err") and r.get("eligible")]
         if not rs:
             continue
         n_bags = len(rs)
