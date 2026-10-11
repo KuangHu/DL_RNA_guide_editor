@@ -284,12 +284,99 @@ is 2–4 independent physical events reported as 4 cross-site evidence.
 The `mean_m_frac=1.000` reflects per-site self-matching, NOT a shared
 cross-site motif at a homologous nc position.
 
-**Verdict shift on CDS03597:** The previous "top novel" interpretation
-is unsupported by homology. CDS03597's v3 signal does not represent
-one physical ncRNA–target pairing across sites. It represents
-several independent per-site coincidental matches that happen to land
-at the same raw concat index. Downgrade from "candidate novel RNA-guided"
-to "artifact of raw-nc_pos clustering with non-homologous ncs".
+**Preliminary read on CDS03597 (reviewer-corrected):** downgrade from
+"top novel" is justified, but "artifact" is not yet proven at the full
+evidence level above. The guide window alone (14 nt) does not settle
+between (a) variable guide at a homologous position with corresponding
+target variation, (b) unrelated fragments grouped by raw index, or
+(c) overlapping extraction / repeat contamination. Full alignment
+context is needed; see next section.
+
+Status for CDS03597 under the reviewer's three categories:
+**(2) coord correspondence not yet verified** — not "(3) artifact
+confirmed" — until the alignment inspection below closes the evidence.
+
+### Full alignment inspection of CDS03597's top cluster (added 2026-10-11)
+
+Tool: `scripts/inspect_cluster_alignment.py`. Replays Phase A→D for
+the bag, identifies the actual supporting-site set, and dumps per-site
+nc + flank context around the cluster (orientation-aware, with per-base
+match line).
+
+Output for the top cluster (nc_pos=1, L=14, flank_pos=45):
+
+- **Actual supporting sites: {0, 4, 6, 7}** (not {1, 3, 6, 7} as the
+  previous commit's commit-message guessed; the guess was unsupported
+  and is retracted).
+- All 4 supporting sites: orient=rc, flank_pos=45, m=14/14, rank=1.
+- Each site's `nc[1:15]` is the reverse-complement of its own
+  `flank[45:59]` — a within-site self-match.
+- Guide sequences differ across the 4 supporting sites:
+  site 0 `TCGTCTAACCGCGC`, site 4 `GTGATGGTGGTTAT`, site 6
+  `TGAATGAGACAGGC`, site 7 `TTTAGCGCAGGGAA`.
+
+The decisive observation came from the ±50 nt FLANK context, not from
+the guide window itself:
+
+- **Site 0's flank contains site 4's nc verbatim.** Site 0 flank
+  context: `...cagcccgcaggac GTGATGGTGGTTATCCAGTTTAACC` — that stretch
+  is literally site 4's leading nc sequence.
+- **Site 7's flank contains site 6's target verbatim.** Site 7 flank
+  contains `cctgtctcattca`, which is site 6's chosen target
+  `GCCTGTCTCATTCA` (one strand).
+- **Sites 4, 6, 7 flanks share long stretches with each other.**
+  All three contain `ctccagtcctccagttggttaaactg`.
+
+Interpretation: the four supporting sites' flanks are drawn from the
+**same or paralogous locus**. The nc extraction and the flank
+extraction appear to overlap or draw from overlapping genomic DNA.
+Each site's within-window self-match (nc[1:15] = RC(flank[45:59])) is
+consistent with either:
+- **inverted repeats within a single piece of DNA** (TIR-like
+  structural feature of a transposon or IS), or
+- **overlapping / paralogous flank+nc extraction** where the same
+  bases of genome appear in both the nc and the flank slot.
+
+What this rules OUT: the "variable guide at homologous position"
+interpretation. If supporting sites were different physical events
+sharing one ncRNA with per-site guide drift, the ±50 nt nc context
+around the guide should align column-wise across the 4 supporting
+sites. It does not — each supporting site's nc is a different piece
+of DNA. The guide positions align because they are all at nc_pos=1
+of each site's own nc, not because the nc regions themselves align.
+
+What it does NOT yet rule out: the possibility that CDS03597 is a
+transposon with terminal inverted repeats (TIRs) and that v3 is
+detecting the structural TIR signature, with sites being independent
+insertions of the same mobile element but with different per-insertion
+TIR variants. That is a legitimate biological signal, but it is NOT
+an RNA-guided target-recognition signal, which is what v3 was intended
+to find.
+
+**Current CDS03597 status:**
+- "Novel RNA-guided system candidate" — retracted.
+- "Confirmed artifact" — not asserted.
+- "Signal is a within-site self-match, consistent with TIR / IR / overlapping
+  extraction; not a cross-site shared RNA-guided target recognition" —
+  what the current evidence supports.
+- Follow-up required: trace upstream provenance of the 4 supporting
+  sites' nc + flank extractions. If they are from overlapping genomic
+  intervals, the signal is extraction overlap. If they are independent
+  insertions of the same element, the signal is TIR structural. Either
+  way, not an RNA-guided discovery.
+
+### Status propagated to the other candidates
+
+The alignment inspection has only been performed on CDS03597 and (in
+summary form) CDS03474. The other bags remain in state **(2) coord
+correspondence not yet verified**:
+- CDS04337, CDS02973, CDS00113 (banked top-4) — not yet inspected.
+- CDS01977, CDS07967 (IS110 v3-passers) — not yet inspected.
+- The other 9 TnpB-family bags (coord-incomparable) — not yet inspected.
+- Top-30 novel-tagged bags from the sweep — explicitly NOT batch-inspected
+  until CDS03597's evidence loop is closed per reviewer guidance.
+
+### Correction to the audit framing (2026-10-11, reviewer note)
 
 The homology spot-check (not the structural audit) is what settles
 each case. CDS03474 confirms the method CAN detect real shared motifs
