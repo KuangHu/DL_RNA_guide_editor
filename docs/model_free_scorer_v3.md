@@ -491,6 +491,80 @@ pairing is a biological read, not a dedup task.
 CDS04337 / CDS02973 / CDS00113: 209 / 24 / 50 merged clusters
 respectively, **zero** above the 0.89 publication threshold.
 
+### Step 7b — full 1173-bag sweep + Pfam annotation
+
+Slurm job 26837369 completed 2026-10-11 00:34, elapsed **00:55:22**, exit 0.
+Input: all 1173 CDS IDs in `all_candidates/` (intersection with
+v5 adapted jsonl = 100%). Output:
+
+- `candidates_v3.tsv` (194 MB, 1,157,555 rows unmerged)
+- `candidates_v3_merged.tsv` (65 MB, 342,797 rows merged)
+- `rejections_v3.tsv` (16 MB, 236,607 rows)
+
+Of 342,797 merged rows:
+- **1,304** cross the 0.89 publication threshold
+- across **230 unique bags** (**19.6 %** of the input 1173)
+
+Post-sweep annotation via `scripts/annotate_v3_top_hits.py`:
+- Joined with `all_candidates/manifest.tsv` → species, dominant_orf_aa,
+  tier, strict Pfam at E ≤ 1e-5
+- Joined with v4 / v5 model `bag_max` scores
+- Sensitive hmmscan at E ≤ 10 on the dominant ORF of each top-50 bag
+
+### Top-50 by mean_m — 30 ANNOTATED, 20 NOVEL
+
+Positive-control recovery (two Y1_Tnp hits — IS200/IS605 family, known RNA-guided):
+
+| rank | bag_id | mean_m | sup/K | bg | strict Pfam | sensitive Pfam | species |
+|---:|---|---:|---:|---:|---|---|---|
+| 1  | **CDS01672** | 1.000 | 5/8 | 5 | — | **Y1_Tnp** (E=3e-5) | ecoli |
+| 45 | CDS01048 | 1.000 | 4/8 | 3 | — | Y1_Tnp (E=7e-3, weak) | ecoli, kpneu |
+
+Novel candidates (perfect mean_m, 4–5 local bg groups, no Pfam at either strict or meaningful sensitive):
+
+| rank | bag_id | sup/K | bg | sens Pfam | species |
+|---:|---|---:|---:|---|---|
+|  5 | **CDS03548** | 5/8 | 5 | NO HIT  | hpylori |
+|  8 | CDS06773 | 5/8 | 5 | DUF4508 (E=0.1, weak) | sa |
+| 13 | CDS00990 | 7/8 | 4 | DUF4834 (E=3, noise) | ecoli |
+| 15 | CDS01051 | 5/8 | 4 | NO HIT | ecoli |
+| 17 | **CDS03597** | 4/8 | 4 | DUF1672 (E=3e-3, 17.6b) | kpneu |
+| 19 | CDS03929 | 5/8 | 4 | NO HIT | kpneu |
+| 20 | CDS03991 | 4/8 | 4 | NO HIT | kpneu |
+| 21 | **CDS04073** | 7/8 | 4 | NO HIT | kpneu |
+| 25 | CDS05802 | 5/8 | 4 | NO HIT | ngonorrhoeae |
+| 29 | CDS08625 | 4/8 | 4 | NO HIT | spneumoniae |
+| 33 | CDS02146 | 4/8 | 4 | NO HIT | ecoli |
+| 34 | CDS01144 | 4/8 | 4 | NO HIT | ecoli |
+| 36 | CDS05857 | 4/8 | 4 | NO HIT | ngonorrhoeae |
+| 37 | CDS06377 | 5/8 | 4 | NO HIT | paeruginosa |
+| 40 | CDS04209 | 4/8 | 4 | NO HIT | kpneu |
+| 44 | CDS00986 | 6/8 | 3 | NO HIT | ecoli |
+
+(Rows 22, 38, 48 are weaker novel; omitted for brevity. CDS03597,
+previously the top-4 banked candidate, lands at rank 17 — one of
+~15 equally-strong novels at perfect mean_m with 4+ bg groups.)
+
+### Species distribution in top-50 novel
+
+```
+kpneu           7
+ecoli           6
+sa              2
+ngonorrhoeae    2
+hpylori, mtuberculosis, paeruginosa, spneumoniae, efaecalis   1 each
+```
+
+Spread across 9 species — the strict v3 signal is not a kpneu artifact.
+
+### Known residual
+
+- `rank_by_*` columns in `candidates_v3_merged.tsv` were empty on the
+  sweep output (bug in `run_v3_scorer.py`: ranks were computed on the
+  unmerged list only; fixed in commit after this run).
+  `scripts/annotate_v3_top_hits.py` computes ranks locally from the
+  raw columns so the top-50 ranking above is correct.
+
 ## Status
 
 | step | phase | tests + run | status |
@@ -502,7 +576,7 @@ respectively, **zero** above the 0.89 publication threshold.
 | 5 | G 4-null calibration + case 1-strict | 500-bag calibration + non-best cluster recovery through A→C | DONE |
 | 6 | ranking + final output schema | `scripts/run_v3_scorer.py` + applied to top-4 | DONE |
 | 7a | multi-L / multi-nc_pos merge + 3 unit tests + applied to top-4 | DONE |
-| 7b | apply v3 to all 1173 `all_candidates/` bags (Slurm 26837369) | running |
+| 7b | apply v3 + Pfam annotation to all 1173 `all_candidates/` bags (Slurm 26837369) | DONE |
 
 ### What's not yet done (step 6)
 

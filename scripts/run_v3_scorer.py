@@ -313,6 +313,19 @@ def main():
             })
             merged_rows_out.append(row)
 
+    # Fill the three orthogonal rank columns on the MERGED rows per bag
+    by_bag_merged = defaultdict(list)
+    for r in merged_rows_out:
+        by_bag_merged[r["bag_id"]].append(r)
+    for bag_id, rows in by_bag_merged.items():
+        for i, r in enumerate(sorted(rows, key=lambda r: (-int(r["n_local_bg_groups"]),
+                                                             -float(r["mean_m_frac"]))), 1):
+            r["rank_by_bg_groups"] = i
+        for i, r in enumerate(sorted(rows, key=lambda r: -float(r["mean_m_frac"])), 1):
+            r["rank_by_mean_m"] = i
+        for i, r in enumerate(sorted(rows, key=lambda r: float(r["flank_pos_mad"])), 1):
+            r["rank_by_tightness"] = i
+
     merged_path = args.outdir / "candidates_v3_merged.tsv"
     MERGED_COLS = (
         CANDIDATE_COLS

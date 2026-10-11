@@ -114,22 +114,59 @@ def main():
             w.writerow({k: r.get(k, "") for k in out_cols})
     print(f"# wrote {ann_path}")
 
-    # Rank by publication-passing rows, then by chosen rank column
+    # Rank by publication-passing rows.  NOTE: the sweep's rank_by_* columns
+    # were empty due to a bug in run_v3_scorer.py (ranks were filled on the
+    # unmerged list, not the merged list).  We compute ranks here directly
+    # from the raw columns so this annotator is self-sufficient.
     pub_rows = [r for r in rows
                 if r.get("passes_publication_threshold", "False") == "True"]
     print(f"# {len(pub_rows)} merged rows above publication threshold")
 
-    def _rank(r):
-        v = r.get(args.rank_column, "")
-        try: return int(v)
-        except (ValueError, TypeError): return 10**9
-    pub_rows.sort(key=_rank)
-
-    # Unique CIDs in top publication rows (bags, not per-cluster)
-    seen_cids: list[str] = []
+    # Fill ranks per-bag over publication rows.
+    from collections import defaultdict
+    by_bag_pub = defaultdict(list)
     for r in pub_rows:
-        if r["bag_id"] not in seen_cids:
-            seen_cids.append(r["bag_id"])
+        by_bag_pub[r["bag_id"]].append(r)
+    for bag, rr in by_bag_pub.items():
+        for i, r in enumerate(sorted(rr, key=lambda r: (
+                -int(r["n_local_bg_groups"]),
+                -float(r["mean_m_frac"]),
+                float(r["flank_pos_mad"]))), 1):
+            r["_rank_by_bg_groups"] = i
+        for i, r in enumerate(sorted(rr, key=lambda r: (
+                -float(r["mean_m_frac"]),
+                -int(r["n_local_bg_groups"]),
+                float(r["flank_pos_mad"]))), 1):
+            r["_rank_by_mean_m"] = i
+        for i, r in enumerate(sorted(rr, key=lambda r: (
+                float(r["flank_pos_mad"]),
+                -int(r["n_local_bg_groups"]),
+                -float(r["mean_m_frac"]))), 1):
+            r["_rank_by_tightness"] = i
+
+    rank_key = f"_{args.rank_column}"
+
+    # Each bag's BEST cluster per the chosen column (rank=1 within bag)
+    bag_best: dict[str, dict] = {}
+    for r in pub_rows:
+        bid = r["bag_id"]
+        if bid not in bag_best or r[rank_key] < bag_best[bid][rank_key]:
+            bag_best[bid] = r
+
+    # Sort bags GLOBALLY by their best cluster's raw metric
+    if args.rank_column == "rank_by_mean_m":
+        bag_sort_key = lambda r: (-float(r["mean_m_frac"]),
+                                     -int(r["n_local_bg_groups"]),
+                                     float(r["flank_pos_mad"]))
+    elif args.rank_column == "rank_by_bg_groups":
+        bag_sort_key = lambda r: (-int(r["n_local_bg_groups"]),
+                                     -float(r["mean_m_frac"]),
+                                     float(r["flank_pos_mad"]))
+    else:   # rank_by_tightness
+        bag_sort_key = lambda r: (float(r["flank_pos_mad"]),
+                                     -int(r["n_local_bg_groups"]),
+                                     -float(r["mean_m_frac"]))
+    seen_cids = [r["bag_id"] for r in sorted(bag_best.values(), key=bag_sort_key)]
 
     print(f"# {len(seen_cids)} unique bags above publication threshold")
     hmmscan_targets = seen_cids[: args.top_n_hmmscan]
@@ -180,35 +217,42 @@ def main():
     out_tsv = args.outdir / "top_v3_hits_pfam_sensitive.tsv"
     with out_tsv.open("w") as f:
         w = csv.writer(f, delimiter="\t")
-        w.writerow(["rank", "bag_id", "v3_rank_by_bg_groups",
-                    "v4_bag_max", "v5_bag_max", "tier",
+        w.writerow(["rank", "bag_id", "mean_m_frac", "n_support_raw",
+                    "support_frac_raw", "n_local_bg_groups",
+                    "guide_at_cluster", "v4_bag_max", "v5_bag_max", "tier",
                     "pfam_strict_E1e-5", "pfam_sensitive_E10",
-                    "species", "dominant_orf_aa"])
+                    "novelty", "species", "dominant_orf_aa"])
         for i, cid in enumerate(hmmscan_targets, 1):
-            # look up first pub row for this cid
-            pub_r = next(r for r in pub_rows if r["bag_id"] == cid)
+            pub_r = bag_best[cid]
             hits = hits_per_cid.get(cid, [])
             sens = ",".join(f"{n}(E={e:.0e},{b:.1f}b)" for n, e, b in hits[:4]) or "-"
-            w.writerow([i, cid, pub_r.get("rank_by_bg_groups", ""),
+            pfam_strict = pub_r["pfam_strict_E1e-5"]
+            novelty = "NOVEL" if (pfam_strict == "-" or not pfam_strict) and \
+                                 (not hits or hits[0][1] > 1e-3) else "ANNOTATED"
+            w.writerow([i, cid, pub_r["mean_m_frac"], pub_r["n_support_raw"],
+                        pub_r["support_frac_raw"], pub_r["n_local_bg_groups"],
+                        pub_r["guide_at_cluster"],
                         pub_r["v4_bag_max"], pub_r["v5_bag_max"],
-                        pub_r["tier"], pub_r["pfam_strict_E1e-5"], sens,
+                        pub_r["tier"], pfam_strict, sens, novelty,
                         pub_r["species"], pub_r["dominant_orf_aa"]])
     print(f"# wrote {out_tsv}")
 
     # Short textual summary
     print(f"\n## top-20 v3 hits (by {args.rank_column})")
     for i, cid in enumerate(hmmscan_targets[:20], 1):
-        pub_r = next(r for r in pub_rows if r["bag_id"] == cid)
+        pub_r = bag_best[cid]
         hits = hits_per_cid.get(cid, [])
         pfam_strict = pub_r["pfam_strict_E1e-5"]
         pfam_sens = ",".join(f"{n}({e:.0e})" for n,e,_ in hits[:2]) or "NO HIT"
         tag = "NOVEL" if (pfam_strict == "-" or not pfam_strict) and \
                         (not hits or hits[0][1] > 1e-3) else "ANNOTATED"
-        print(f"  {i:>2d}  {cid:<10s}  v4={pub_r['v4_bag_max'] or '-':>6s}  "
+        print(f"  {i:>2d}  {cid:<10s}  mm={pub_r['mean_m_frac']:>5s}  "
+              f"sup={pub_r['n_support_raw']:>2s}/{pub_r['K_valid']:>1s}  "
+              f"bg={pub_r['n_local_bg_groups']:>1s}  "
+              f"v4={pub_r['v4_bag_max'] or '-':>6s}  "
               f"v5={pub_r['v5_bag_max'] or '-':>6s}  "
-              f"tier={pub_r['tier']:<16s}  "
-              f"strict=[{pfam_strict[:40]}]  "
-              f"sens=[{pfam_sens[:40]}]  "
+              f"strict=[{pfam_strict[:30]}]  "
+              f"sens=[{pfam_sens[:35]}]  "
               f"{tag}  "
               f"({pub_r['species']})")
 
