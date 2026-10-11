@@ -1,0 +1,3 @@
+qseqid	sseqid	pident	length	mismatch	gapopen	qstart	qend	sstart	send	evalue	bitscore	qlen	slen
+GCA_002852325.2_k12.B000016_insert_fromAllele_1824bp	GCA_002852325.2_k12.B000016_allele_B_empty_len400	95.276	127	5	1	1	127	98	223	2.97e-55	200	1824	400
+GCA_002852325.2_k12.B000016_insert_fromAllele_1824bp	GCA_002852325.2_k12.B000016_allele_B_empty_len400	96.875	96	3	0	1728	1823	1	96	1.40e-43	161	1824	400

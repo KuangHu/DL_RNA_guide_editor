@@ -1,0 +1,5 @@
+site_idx	db_id	locus_id	contig	start	end	pre_event_genome	pre_event_strand	n_equivalent_decompositions	junction_L_abs	junction_R_abs	junction_ambiguity_bp	decomposition_method	insert_start_in_long_bp	n_cds_prodigal	md5_from_allele_calc	md5_from_loci_tsv	md5_from_jsonl
+0	kpneu.E002228	GCA_012964645.1_k12.B000025	CP052231.1	2736353	2736758	GCA_012964645.1	+	131	2736573	2736573	130	exact	220	4	9c1206b13ceb	9c1206b13ceb	None
+4	kpneu.E001816	GCA_002852325.2_k12.B000016	CP055119.1	2599952	2600352	GCA_022354725.1	+	108	2600049	2600049	107	tolerant_alignment	97	3	d6f3ec8d19b6	d6f3ec8d19b6	None
+6	kpneu.E002303	GCA_018394355.1_k12.B000001	CP167484.1	2782548	2782956	GCA_052975525.1	+	155	2782797	2782797	154	exact	249	3	d91b3b7b852d	d91b3b7b852d	None
+7	kpneu.E002471	GCA_023703975.1_k24.B000018	CP055119.1	2599952	2600352	GCA_022354725.1	+	66	2600091	2600091	65	tolerant_alignment	139 (fallback)	2	d77c7842e396	d77c7842e396	None

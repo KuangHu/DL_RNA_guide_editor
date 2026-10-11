@@ -1,0 +1,9 @@
+{
+  "md5_from_allele_calc": "d91b3b7b852d",
+  "md5_from_loci_tsv": "d91b3b7b852d",
+  "md5_from_jsonl_record": null,
+  "insert_from_allele_len": 1824,
+  "inserted_len_from_loci_tsv": 1824,
+  "insert_start_source": "insert_start_in_long_bp",
+  "insert_start_value": 249
+}

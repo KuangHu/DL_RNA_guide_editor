@@ -1,0 +1,9 @@
+{
+  "md5_from_allele_calc": "d77c7842e396",
+  "md5_from_loci_tsv": "d77c7842e396",
+  "md5_from_jsonl_record": null,
+  "insert_from_allele_len": 1825,
+  "inserted_len_from_loci_tsv": 1825,
+  "insert_start_source": "junction_L_abs - start (fallback)",
+  "insert_start_value": 139
+}

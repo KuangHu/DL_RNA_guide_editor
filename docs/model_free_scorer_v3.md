@@ -417,9 +417,13 @@ NOT at a shared position in the aligned ncRNA.
 
 Sites 4, 6, 7 targets share two blocks: `ccgccatcttccctgcgc` and
 `taaaactccagtcctccagttggttaaactggataaccacca`. Sites 6 and 7 targets
-are nearly identical over most of the 120 bp. **Sites 4/6/7 are three
-independent insertions into the same orthologous target locus in
-three different kpneu genomes.** Site 0's target is unrelated.
+are nearly identical over most of the 120 bp. Sites 4/6/7's extracted
+targets are highly similar across three different kpneu assemblies,
+consistent with (but not sole evidence of) three insertions into the
+same orthologous locus; site 0's target is dissimilar. The
+"independent insertion" and "same orthologous locus" claims require
+confirmation against the source assemblies' coordinates and the
+empty-allele alignment, which has NOT yet been done — see R5.
 
 ### Current status for CDS03597 — three-category classification
 
@@ -433,25 +437,34 @@ Under the reviewer's three-state framework:
   element family); we have nc + target MSAs; but we have NOT closed
   the loop that the per-site RC pairings represent one coherent
   mechanism.
-- **(3) Artifact confirmed** — NO. Extraction overlap is ruled out
-  by distinct genomes. The per-site RC pairings may still reflect
+- **(3) Artifact confirmed** — not demonstrated. "Extraction overlap"
+  was previously stated as "ruled out by distinct genomes"; that
+  argument is incomplete, since inconsistent per-genome carrier-boundary
+  calls could still place part of the element into the extracted nc
+  on some sites but not others. The per-site RC pairings may reflect
   real within-element structural features (TIR-like inverted repeats,
-  element-boundary pairing). Those features would be interesting but
-  are NOT RNA-guided target recognition.
+  element-boundary pairing) OR an extraction-boundary artefact. Neither
+  interpretation is RNA-guided target recognition, but which of the two
+  it is cannot be stated without the occupied/empty allele check (step 2).
 
-**What the alignment evidence settles:**
-- There IS a real conserved mobile-element family here (sites 4/6/7
-  share nc scaffold + target locus; site 0 is a different element).
+**What the alignment evidence settles (DOWNGRADED 2026-10-11):**
+- Four of eight sites' extracted nc windows share scaffold at the
+  motif region (per-site context MSA). Whether this reflects a true
+  element family, carrier-boundary artefact, or a mix is not yet
+  established — see R5 retraction below.
 - The v3 cluster at raw `nc_pos=1 L=14 flank_pos=45` is NOT finding a
   shared guide-target pairing at homologous positions — the raw index
-  mixes different scaffold columns even within the homologous subset.
-- CDS03597 is more honestly described as "a mobile-element family
-  with per-insertion RC pairing between extracted nc and flank, where
-  the raw-index clustering coincidentally groups them; not an RNA-guided
-  target-recognition signal."
+  mixes different scaffold columns even within the subset of sites
+  that share a scaffold.
+- CDS03597 remains status (2) **boundaries and pairing source to be
+  verified**. The verdicts "mobile-element family", "site 0 is a
+  different element", and "independent insertions" are claims that
+  need to be grounded in the source-genome occupied/empty alleles
+  before they are repeated.
 
-**Extended-pairing analysis — the RC complementarity extends 40–55 bp
-through the 14-mer core (added 2026-10-11)**
+**Extended-pairing observation — RC complementarity extends 40–55 bp
+through the 14-mer core (added 2026-10-11; interpretation RETRACTED
+2026-10-11)**
 
 Running the per-site nc vs RC(flank) alignment on ±40 nt around the
 cluster (centered on the 14-mer core), with aligned display and
@@ -464,19 +477,39 @@ per-site extension counts:
 | 6 | 14/14 | 0 | 27 | **41 bp** |
 | 7 | 14/14 | 1 | 8 | 23 bp (plus more at offset) |
 
-For sites 0, 4, 6 the RC pairing is a **40–55 bp contiguous
-Watson–Crick stretch**, not a 14-mer. Real RNA-guided target
-recognition uses ~20-nt guides (sgRNA / crRNA) or 32–40 nt in TnpB.
-**A 50+ bp fully-paired stretch is not an RNA guide — it is DNA
-sequence that happens to appear on both strands of the extracted
-window.** This is the signature of a transposon with large terminal
-inverted repeats (TIRs), not an RNA-guided system.
+**R5 (retraction, 2026-10-11)** — the "TIR confirmed" / "mobile-element
+with terminal inverted repeats" verdict issued in commit `6744793` is
+**withdrawn**. The 40–55 bp Watson–Crick stretch is a genuine
+observation on the EXTRACTED nc + flank windows, but the extraction
+boundaries and orientation mapping used by the discovery pipeline
+have NOT been independently verified against the source genome.
+Possible explanations include:
+- true element TIRs,
+- shared element DNA that lies partly inside the extracted flank
+  and partly inside the extracted nc because the flank/nc boundary
+  bisects a larger repeated/duplicated region,
+- orientation convention mismatch (nc extracted on one strand, flank
+  on the other, with no biological inversion present),
+- extraction overlap caused by inconsistent carrier-boundary calls
+  across sites,
+- a mix of the above across sites 0 vs 4/6/7.
 
-**Updated CDS03597 verdict (reviewer-accepted language):**
-"Mobile-element family with large terminal inverted repeats; the v3
-signal reflects TIR structure, not RNA-guided target recognition."
-Status (3) — artifact of a structural / TIR class rather than
-RG-discovery.
+The previous language that CDS03597 is "a mobile-element with large
+TIRs", that "site 0 is a different element", and that these are
+"four independent insertions" was over-confident. **Current status
+of CDS03597: (2) boundaries and pairing source to be verified** —
+NOT (3) TIR-artifact and NOT (1) RG-validated.
+
+Resolving it requires: (i) exporting occupied + empty alleles with
+contig, coords, strand, and real CDS annotation for each supporting
+site; (ii) aligning the full 1824 bp insert against the occupied and
+empty alleles to confirm the insertion boundaries that gave rise to
+the extracted nc + flank windows; (iii) explaining the per-site
+start-offsets (sites 4/6/7 shift relative to site 0 by tens of bp
+inside the extracted window) in terms of real repeats vs. boundary
+decomposition. Only then can the 40–55 bp stretch be attributed to
+a biological TIR vs. an extraction artefact. This work is step 2–3
+of the agreed order and is NOT in the current commit.
 
 ### Evidence folder (checked in, 2026-10-11)
 
@@ -497,8 +530,84 @@ pairings/site_<i>_pairing.txt       — nc vs RC(flank) aligned with extension c
 
 GBK files are loadable in Artemis / SnapGene / Benchling. Open the
 pairings/*.txt to see the full-length Watson–Crick complementarity
-through the 14-mer core and judge for yourself whether it is a guide
-or a TIR.
+through the 14-mer core. **Caveat (added 2026-10-11, retraction R5):**
+the current `inserts/site_<i>_insert.gbk` files annotate the whole
+1824 bp insert as a single CDS, which is wrong — Prodigal/6-frame
+ORF calling against the insert, together with occupied/empty allele
+alignment, is required before the GBKs are usable biology, and
+before the "TIR vs guide" question can be answered.
+
+### Evidence v2 (step 2 of the retract-first order, 2026-10-11)
+
+`evidence/CDS03597/nc1_L14_fp45_v2/` adds, per supporting site:
+
+- `loci_evidence.tsv` — every coord-level field from `loci.tsv`
+  (contig, start, end, junction_L_abs/R_abs, junction_ambiguity_bp,
+  pre_event_genome, strand, inserted_md5, decomposition_method,
+  decomposition_quality, decomposition_confidence,
+  n_equivalent_decompositions, homologous_identity/coverage,
+  insert_start_in_long_bp).
+- `occupied.fna`, `empty.fna` — the full longest allele (with insert)
+  and shortest allele (empty host target) extracted from the panel's
+  `alleles.fna`.
+- `insert_from_allele.fna` — insert carved from the occupied allele
+  at the chosen boundary, md5-checked against `inserted_md5` in
+  `loci.tsv` (match verified for all 4 supporting sites).
+- `insert.gbk` — proper multi-CDS GenBank from Prodigal `-p meta`.
+  No whole-insert fake CDS.
+- `insert_s<i>.prodigal.{gff,faa}` — raw ORF coords + translated
+  proteins.
+- `insert_vs_occupied.blast`, `insert_vs_empty.blast` — short-word
+  blastn preserving ties (max_hsps=20, dust=no, word_size=11).
+- `locus_region.fna` — ±1 kb of locus in the seed genome contig.
+- `md5_check.txt` — insert-from-allele md5 vs loci.tsv vs JSONL.
+
+Cross-site: `summary.tsv`, `inserts_pairwise.blast`,
+`orfs_pairwise.blast`, `boundary_overlap.tsv`.
+
+**Factual findings (not verdicts):**
+
+1. **Three conserved ORFs across all 4 sites** (blastp all-vs-all):
+   239 aa (97.1% min id), 161 aa (98.1% min id), 65 aa (100%, sites
+   0/4/6 only). The insert IS a conserved ~1.8 kb mobile element.
+   CDS03597 is one of its ORFs; Pfam / RNA-guided classification is
+   a separate step not performed here.
+2. **Sites 4 and 7 share the same orthologous locus** — same contig
+   CP055119.1, same empty-locus coords 2599952–2600352, same
+   pre-event genome GCA_022354725.1. Chosen junctions differ by
+   42 bp (2600049 vs 2600091), inside each site's own
+   ambiguity window (65–107 bp). The "4 independent supporting
+   sites" is probably 3 at the orthologous-locus level (0, 4≡7, 6);
+   previous commit's "four independent insertions" was over-reach.
+3. **Decomposition is highly ambiguous** —
+   `n_equivalent_decompositions ∈ {66, 108, 131, 155}` and
+   `junction_ambiguity_bp ∈ {65, 107, 130, 154}`. The chosen boundary
+   is one of hundreds of equally scored picks.
+   `decomposition_quality` is 0.015 (site 7), 0.043 (site 4), NA
+   (sites 0, 6 — exact method). This directly challenges the
+   assumption that the extracted nc / flank windows represent clean
+   element / host partition.
+4. **Every extracted "insert" overlaps the EMPTY allele at both
+   edges** — insert's 5' first 61–127 bp match an empty-allele
+   stretch at 92–96% id; insert's 3' last 138–179 bp match an
+   empty-allele stretch at 97–98% id. The host-matching sequence is
+   present in the empty allele as real host DNA. See
+   `boundary_overlap.tsv` for the full table.
+
+**Impact on the v3 Phase C signal:** the first ~100–180 bp of the
+extracted flank (immediately outside the chosen insert boundary) are
+not clean host — they are the host-matching edge zone of the "insert"
+displaced across the chosen boundary. The 40–55 bp Watson–Crick
+pairing observed in v1's `pairings/*.txt` falls at the leading edge
+of the extracted flank. Whether it represents (a) a true intra-element
+TIR made visible because the chosen boundary slices into it,
+(b) a boundary-decomposition artefact in which both nc and flank
+windows happen to be drawing from the same host-like repeat zone, or
+(c) something else, is NOT decided by this evidence pull. It is the
+step-3 / step-4 question.
+
+The current status of CDS03597 is unchanged by this commit:
+**(2) boundaries and pairing source to be verified**.
 
 ### Status propagated to the other candidates
 

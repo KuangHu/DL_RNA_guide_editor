@@ -1,0 +1,17 @@
+site_idx	compare_to	edge	hit_pident	hit_length	insert_qstart_qend	subj_sstart_send
+0	empty	3p_edge	96.08	153	1672-1824	69-220
+0	empty	5p_edge	95.56	90	2-91	222-311
+0	occupied	3p_edge	96.08	153	1672-1824	69-220
+0	occupied	5p_edge	95.56	90	2-91	2046-2135
+4	empty	5p_edge	95.28	127	1-127	98-223
+4	empty	3p_edge	96.88	96	1728-1823	1-96
+4	occupied	5p_edge	96.06	127	1-127	1922-2047
+4	occupied	3p_edge	100.00	96	1728-1823	1-96
+6	empty	3p_edge	98.32	179	1646-1824	71-249
+6	empty	5p_edge	91.80	61	2-62	251-310
+6	occupied	3p_edge	98.32	179	1646-1824	71-249
+6	occupied	5p_edge	91.80	61	2-62	2075-2134
+7	empty	3p_edge	97.10	138	1687-1824	1-138
+7	empty	5p_edge	92.94	85	1-85	140-223
+7	occupied	3p_edge	97.10	138	1687-1824	1-138
+7	occupied	5p_edge	94.12	85	1-85	1965-2048

@@ -1,0 +1,7 @@
+##gff-version  3
+# Sequence Data: seqnum=1;seqlen=1824;seqhdr="GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp"
+# Model Data: version=Prodigal.v2.6.3;run_type=Metagenomic;model="47|Xenorhabdus_nematophila_ATCC_19061|B|44.1|11|1";gc_cont=44.20;transl_table=11;uses_sd=1
+GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp	Prodigal_v2.6.3	CDS	264	980	62.6	+	0	ID=1_1;partial=00;start_type=ATG;rbs_motif=AGGA;rbs_spacer=5-10bp;gc_cont=0.363;conf=100.00;score=62.62;cscore=45.64;sscore=16.98;rscore=9.79;uscore=3.20;tscore=3.99;
+GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp	Prodigal_v2.6.3	CDS	985	1179	9.1	+	0	ID=1_2;partial=00;start_type=ATG;rbs_motif=GGAG/GAGG;rbs_spacer=5-10bp;gc_cont=0.292;conf=91.55;score=10.37;cscore=-2.27;sscore=12.64;rscore=8.45;uscore=0.40;tscore=3.06;
+GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp	Prodigal_v2.6.3	CDS	1198	1680	43.2	+	0	ID=1_3;partial=00;start_type=ATG;rbs_motif=AGGAG;rbs_spacer=5-10bp;gc_cont=0.414;conf=100.00;score=44.27;cscore=20.71;sscore=23.56;rscore=14.77;uscore=3.72;tscore=3.99;
+GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp	Prodigal_v2.6.3	CDS	1729	1824	3.3	-	0	ID=1_4;partial=01;start_type=Edge;rbs_motif=None;rbs_spacer=None;gc_cont=0.542;conf=68.02;score=3.28;cscore=0.06;sscore=3.22;rscore=0.00;uscore=0.00;tscore=3.22;

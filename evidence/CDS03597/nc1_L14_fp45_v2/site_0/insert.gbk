@@ -1,0 +1,125 @@
+LOCUS       GCA_012964645.1_        1824 bp    DNA              UNK 01-JAN-1980
+DEFINITION  insert len=1824.
+ACCESSION   GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp
+VERSION     GCA_012964645.1_k12.B000025_insert_fromAllele_1824bp
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+COMMENT     
+            db_id: kpneu.E002228
+            locus_id: GCA_012964645.1_k12.B000025
+            contig: CP052231.1
+            start: 2736353
+            end: 2736758
+            pre_event_genome: GCA_012964645.1
+            pre_event_contig: CP052231.1
+            pre_event_strand: +
+            junction_L_abs: 2736573
+            junction_R_abs: 2736573
+            junction_ambiguity_bp: 130
+            n_equivalent_decompositions: 131
+            decomposition_method: exact
+            decomposition_confidence: 0.008
+            decomposition_quality: NA
+            inserted_md5: 9c1206b13ceb
+            insert_start_in_long_bp: 220
+            inserted_len: 1824
+FEATURES             Location/Qualifiers
+     CDS             264..980
+                     /source="Prodigal_v2.6.3_meta"
+                     /score="62.62"
+                     /phase="0"
+                     /ID="1_1"
+                     /partial="00"
+                     /start_type="ATG"
+                     /rbs_motif="AGGA"
+                     /rbs_spacer="5-10bp"
+                     /gc_cont="0.363"
+                     /conf="100.00"
+                     /cscore="45.64"
+                     /sscore="16.98"
+                     /rscore="9.79"
+                     /uscore="3.20"
+                     /tscore="3.99"
+     CDS             985..1179
+                     /source="Prodigal_v2.6.3_meta"
+                     /score="10.37"
+                     /phase="0"
+                     /ID="1_2"
+                     /partial="00"
+                     /start_type="ATG"
+                     /rbs_motif="GGAG/GAGG"
+                     /rbs_spacer="5-10bp"
+                     /gc_cont="0.292"
+                     /conf="91.55"
+                     /cscore="-2.27"
+                     /sscore="12.64"
+                     /rscore="8.45"
+                     /uscore="0.40"
+                     /tscore="3.06"
+     CDS             1198..1680
+                     /source="Prodigal_v2.6.3_meta"
+                     /score="44.27"
+                     /phase="0"
+                     /ID="1_3"
+                     /partial="00"
+                     /start_type="ATG"
+                     /rbs_motif="AGGAG"
+                     /rbs_spacer="5-10bp"
+                     /gc_cont="0.414"
+                     /conf="100.00"
+                     /cscore="20.71"
+                     /sscore="23.56"
+                     /rscore="14.77"
+                     /uscore="3.72"
+                     /tscore="3.99"
+     CDS             complement(1729..1824)
+                     /source="Prodigal_v2.6.3_meta"
+                     /score="3.28"
+                     /phase="0"
+                     /ID="1_4"
+                     /partial="01"
+                     /start_type="Edge"
+                     /rbs_motif="None"
+                     /rbs_spacer="None"
+                     /gc_cont="0.542"
+                     /conf="68.02"
+                     /cscore="0.06"
+                     /sscore="3.22"
+                     /rscore="0.00"
+                     /uscore="0.00"
+                     /tscore="3.22"
+ORIGIN
+        1 atcgtctaac cgcgcgcaga gccgacgata gagtccctgt ttctgcgccc ggctgcgcgg
+       61 ttttccagcg aaaatatgaa acaatacgaa gtaatagcta accgagatat tttaaaccgg
+      121 gcagggggcg agggaatata aacaaaagag tagagtcaat attactatca aggccatcgt
+      181 tttataagta tattgaaagg ccagatgatc ataagaaata tgtgccggaa caatgaatga
+      241 tctaataaag gaaggatcta attatgtatt ataggaattt catcattccc tcaatcgagg
+      301 cggagcgtat tctggccatg aaatttgatg aagcatttgc tggagtaaaa aagaatgtta
+      361 ttgatgcact gaatcaaatg ggaaatggta taacccgtgc ttcgtattat acttcctgct
+      421 taatggttaa ttatcaggat gtttgttcta agttaaagca agaggacaca agatttattg
+      481 cagggctggc gcagttactt aaaagccgtg atatcatttt ccaaatgatt aaaatatata
+      541 tagaaaccaa ctttcaaaat aaaaaagaag aaaaagctca atatattctc aagaagcttg
+      601 tcggcgcggg agtttacata tcatcttcag gattaactaa tcgtatttta ataatggcag
+      661 tagcaaccat gatttgccag acttccaggt ttaatactgt tgtatatggg cgtatcaaca
+      721 gggcaaggtc attagtcctt aaagggagtg taactgctac cgcagtggta ttaaacgtgt
+      781 atggattgat tcaggatgcc gctaatagcg ctgacaattt gaaaatgcat aattcatttt
+      841 attacaatgc gttatacgct aaccatctgg agatgatgta ctttctcatc gaacctgtca
+      901 tcacaggcgt tccttattta aatccgatga ttatttctga tgatgaactt gctgaattac
+      961 ttattaaatt aatgaggtga atggatggat ttcttgaaaa gatggttaaa agaagaattc
+     1021 attctttttt tatggggatg gggtattgta ttattaatca ttatatttag catgattgca
+     1081 gtctctcttt ttcctgacat tgccattaac ttaataggac tttttgtttt attaatcatt
+     1141 gggtttcacg ttgtcgtttg gtttaaagtt aaaaactgat atgaaagagg aggggtaatg
+     1201 tcaaatccag catatttatg gttaactgat gagaatgatt cgcctattat aggttcttgc
+     1261 ctgatgccca cacgcacggg ttccatcgaa ttgcgcgcag tgaatcatca tgtttggtta
+     1321 cctaccgata ataatacagg aaagctgacg ggaacccgtc ttcatacacc ggttaaaatt
+     1381 caaaaagagt ttgacagaac aacacctttg ttatttaggg ctctttgtga aggtcgaata
+     1441 ttaagatcgg caacgctaaa aatgtacaga ataaatgagg cgggactgga agttgaatat
+     1501 tttaacatag cgatggcgaa tattaagatt acggcaatca caccaaattt acatccggcc
+     1561 ggaatgacaa gtactcacct tgaagacatt gatttccgtt atgagacgat cacctggata
+     1621 tacacagaag ggaacatcat gtatcgtgat tcatggaacg atcgctgttg tgcatggtag
+     1681 caaatgatat agtgctgaaa cgcggcgcct cttgcggcgc cgcctgtctc attcatccgc
+     1741 catcttccct gcgctaaaac tccagtcctc cagttggtta aactggataa ccaccatcac
+     1801 gtcctgcggg ctgaccgcca tctc
+//
