@@ -1,0 +1,7 @@
+si	sj	same_ortho	left_id	left_cov	left_off	right_id	right_cov	right_off	concat_id	concat_cov	concat_off	repeat_source	repeat_src_id	repeat_src_cov
+0	4	False	0.487	39	-3	0.357	56	2	0.340	97	-3	left	0.487	39
+0	6	False	0.359	39	3	0.415	53	-5	0.337	95	-5	right	0.415	53
+0	7	False	0.405	37	5	0.426	54	-4	0.370	100	0	right	0.426	54
+4	6	False	0.282	39	-3	0.375	56	-2	0.295	95	5	right	0.375	56
+4	7	True	0.368	38	-4	0.351	57	-1	0.323	99	-1	left	0.368	38
+6	7	False	0.316	38	-4	0.439	57	1	0.330	100	0	right	0.439	57

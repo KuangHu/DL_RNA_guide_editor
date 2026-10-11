@@ -1,0 +1,5 @@
+site	orf_idx	strand	orf_s_in_occupied	orf_e_in_occupied	insert_start_in_occupied	anchor_pos_in_oriented	occupied_len
+0	1	+	483	1200	220	483	2229
+4	3	-	918	1635	97	589	2224
+6	3	-	1005	1722	249	510	2232
+7	2	-	919	1636	139	589	2225

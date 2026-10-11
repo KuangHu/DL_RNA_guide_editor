@@ -646,6 +646,84 @@ The `insert_start + nc_pos` shortcut used in v1/boundary_stability
 only works for `nc_frag_0`; nc_frag_1 and any reverse-strand hit
 require the full coord_mapping table.
 
+### P2a (prototype on CDS03597) — ORF-anchored orientation + MSA
+
+`scripts/orf_anchored_clustering_proto.py` picks the single
+239-aa ORF family (conserved at ≥97 % identity across all 4
+supporting sites), orients each occupied allele so that ORF faces
++, extracts the ORIENTED INSERT from each, MSAs the 4 oriented
+inserts, and projects each site's core_a position into the MSA
+column coord. See `evidence/CDS03597/nc1_L14_fp45_v2/orf_anchored/`.
+
+Per-site anchor strand on occupied:
+- site 0: `+`  (element in canonical orientation on occupied)
+- sites 4, 6, 7: `−`  (element in opposite polarity on occupied)
+
+In the shared oriented frame, each site's core_a lands at:
+- site 0 → MSA column 89 (near 5′ end of oriented element)
+- site 4 → MSA column 1888 (near 3′ end)
+- site 6 → MSA column 1823 (near 3′ end)
+- site 7 → MSA column 1846 (near 3′ end)
+Max column deviation across sites = **1757**.
+
+**Interpretation (data, not final verdict):** the raw-nc_pos cluster
+at (nc_pos=1, L=14, fp=45) is pulling matches from **opposite ends**
+of the oriented element. The extraction convention is
+"nc_frag_0 starts at the insert's 5′ byte"; because sites 4/6/7
+have the element on the − strand of occupied, their nc_frag_0 picks
+the sequence at what is the 3′ end of the canonical element. The 14-mer
+is the terminal direct repeat (TDR) sequence that appears at BOTH
+ends of the element, so it still gives a sequence match — but at
+opposite element positions. The cross-site cluster therefore
+reflects **TDR homology, not a conserved guide at a conserved scaffold
+column**.
+
+Open points for the main pipeline:
+1. The pipeline currently groups hits by raw `nc_pos`; it has no
+   element-level orientation step. Clusters driven by TDR
+   homology at opposite element ends look identical to clusters
+   driven by a true shared scaffold motif. ORF-anchored
+   orientation + alignment-column clustering is needed to tell them
+   apart.
+2. The TDR itself is a legitimate structural signal of the mobile
+   element, but it is NOT RNA-guided target recognition and NOT a
+   shared ncRNA guide motif.
+
+### P2c (prototype on CDS03597) — Phase D with ortho-locus merging + offset-tolerant background
+
+`scripts/phase_d_v2_ortho_merge_proto.py` adds three Phase D
+behaviours:
+
+1. **Explicit ortho-locus grouping from loci.tsv:** sites sharing
+   `(pre_event_genome, pre_event_contig, locus-coord overlap ≥ 100 bp)`
+   are collapsed into one background group BEFORE any sequence
+   comparison. Promotes the sites 4/7 audit observation into general
+   scoring logic.
+2. **Offset-tolerant pairwise identity:** slides one flank by ±5 bp
+   and keeps the best alignment; coverage length reported alongside
+   identity. Resists small per-site extraction offsets without a
+   full NW alignment.
+3. **Per-pair repeat_source tag:** reports which flank side (left /
+   right / concat) carried the match.
+
+Output on CDS03597's known cluster at (nc_pos=1, L=14, flank_pos~45):
+
+| source | n_local_bg_groups | groups |
+|---|---:|---|
+| current Phase D (sequence only) | 4 | `{0}, {4}, {6}, {7}` |
+| P2c Phase D v2 | **3** | `{0}, {4,7}, {6}` |
+
+The current Phase D does NOT catch the 4/7 ortho overlap because
+the pairwise concat_identity between sites 4 and 7 is only 0.323
+(well below the 0.85 clonal threshold). The two sites share the
+SAME empty-allele reference but the extraction convention produces
+different flank windows per site, so sequence identity alone cannot
+reach the threshold. The ortho-locus merge is therefore necessary
+and NOT redundant with sequence-identity merging. For CDS03597 the
+cluster still passes `min_bg_groups=3`, but it does so at the
+threshold rather than comfortably — and would fail if `min_bg_groups`
+were raised to 4.
+
 Also: the "continuous repeat length" measured in the OCCUPIED allele
 frame is **52, 107, 41, 65 bp** for sites 0, 4, 6, 7 respectively
 (verified by `boundary_stability.py`, see
