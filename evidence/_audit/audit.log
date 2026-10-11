@@ -1,3 +1,5 @@
+[0/7] building filesystem-wide assembly index …
+  indexed 27579 assembly FASTAs across genomes* dirs
 [1/7] loading sweep scope + adapted.jsonl …
   sweep scope: 1173 bag IDs
   adapted.jsonl: 30891 sites across 4380 bags
@@ -12,21 +14,39 @@
 [5/7] computing joined / raw_files_exist / boundary_set_complete …
   axes 1,2,4 computed
 [6/7] sequence_recovered (flank in empty + nc in occupied) …
-  panels to scan: 1311
-  …panel 100/1311
-  …panel 200/1311
-  …panel 300/1311
-  …panel 400/1311
-  …panel 500/1311
-  …panel 600/1311
-  …panel 700/1311
-  …panel 800/1311
-  …panel 900/1311
-  …panel 1000/1311
-  …panel 1100/1311
-  …panel 1200/1311
-  …panel 1300/1311
-  …panel 1311/1311
+  panels to scan: 3190
+  …panel 100/3190
+  …panel 200/3190
+  …panel 300/3190
+  …panel 400/3190
+  …panel 500/3190
+  …panel 600/3190
+  …panel 700/3190
+  …panel 800/3190
+  …panel 900/3190
+  …panel 1000/3190
+  …panel 1100/3190
+  …panel 1200/3190
+  …panel 1300/3190
+  …panel 1400/3190
+  …panel 1500/3190
+  …panel 1600/3190
+  …panel 1700/3190
+  …panel 1800/3190
+  …panel 1900/3190
+  …panel 2000/3190
+  …panel 2100/3190
+  …panel 2200/3190
+  …panel 2300/3190
+  …panel 2400/3190
+  …panel 2500/3190
+  …panel 2600/3190
+  …panel 2700/3190
+  …panel 2800/3190
+  …panel 2900/3190
+  …panel 3000/3190
+  …panel 3100/3190
+  …panel 3190/3190
 [7/7] emitting per-site TSV + per-bag + summaries …
   wrote evidence/_audit/per_site_audit.final.tsv
   wrote per_bag_summary.tsv (4380 bags)
@@ -35,21 +55,31 @@
   joined:
        8697  ok
   raw_files_exist:
-       2631  ok
-       6066  fail:seed_genome_missing
+       6309  ok
+       2388  fail:seed_genome_missing
   sequence_recovered:
-       1261  ok
-       6066  fail:raw_files_not_ok
-       1289  fail:flank_not_in_empty
-         25  ambiguous:flank=1,nc=2,1
-         24  ambiguous:flank=1,nc=1,2
-         17  ambiguous:flank=1,nc=2
-          8  ambiguous:flank=1,nc=2,2
-          3  fail:nc_frag_not_in_occupied(n_zero=1)
+       3196  ok
+       2873  fail:flank_not_in_empty
+       2388  fail:raw_files_not_ok
+         58  ambiguous:flank=1,nc=2,1
+         49  ambiguous:flank=1,nc=1,2
+         43  fail:nc_frag_not_in_occupied(n_zero=1)
+         38  ambiguous:flank=1,nc=2
+         20  ambiguous:flank=1,nc=2,2
+         11  fail:nc_frag_not_in_occupied(n_zero=2)
+          5  ambiguous:flank=1,nc=3
+          3  ambiguous:flank=1,nc=4
+          2  ambiguous:flank=1,nc=5
+          2  ambiguous:flank=1,nc=3,2
           1  ambiguous:flank=1,nc=1,4
-          1  ambiguous:flank=1,nc=5
-          1  ambiguous:flank=1,nc=3
-          1  fail:nc_frag_not_in_occupied(n_zero=2)
+          1  ambiguous:flank=1,nc=3,3
+          1  ambiguous:flank=2,nc=1,1
+          1  ambiguous:flank=1,nc=1,3
+          1  ambiguous:flank=1,nc=15,1
+          1  ambiguous:flank=1,nc=12,1
+          1  ambiguous:flank=1,nc=4,1
+          1  ambiguous:flank=2,nc=1
+          1  ambiguous:flank=1,nc=5,5
   boundary_set_complete:
        3843  ok
        4854  partial:single_cutpoint_only
@@ -58,26 +88,40 @@
   joined:
       30891  ok
   raw_files_exist:
-       9111  ok
-      21780  fail:seed_genome_missing
+      22713  ok
+       8178  fail:seed_genome_missing
   sequence_recovered:
-       3375  ok
-      21780  fail:raw_files_not_ok
-       5589  fail:flank_not_in_empty
-         50  ambiguous:flank=1,nc=2,1
-         34  ambiguous:flank=1,nc=1,2
-         32  ambiguous:flank=1,nc=2
-         14  ambiguous:flank=1,nc=2,2
-          7  fail:nc_frag_not_in_occupied(n_zero=1)
-          2  ambiguous:flank=1,nc=4
-          1  ambiguous:flank=1,nc=1,4
+       8429  ok
+      13772  fail:flank_not_in_empty
+       8178  fail:raw_files_not_ok
+        137  fail:nc_frag_not_in_occupied(n_zero=1)
+         99  ambiguous:flank=1,nc=2,1
+         91  ambiguous:flank=1,nc=2
+         76  ambiguous:flank=1,nc=1,2
+         36  ambiguous:flank=1,nc=2,2
+         24  fail:nc_frag_not_in_occupied(n_zero=2)
+          9  ambiguous:flank=1,nc=3
+          6  ambiguous:flank=1,nc=4
+          5  ambiguous:flank=1,nc=3,3
+          4  ambiguous:flank=1,nc=3,2
+          3  ambiguous:flank=1,nc=1,4
+          3  ambiguous:flank=1,nc=3,1
+          3  ambiguous:flank=1,nc=4,1
+          2  ambiguous:flank=1,nc=5
           1  ambiguous:flank=1,nc=23,1
           1  ambiguous:flank=1,nc=2,3
-          1  ambiguous:flank=1,nc=3,3
-          1  ambiguous:flank=1,nc=4,1
-          1  ambiguous:flank=1,nc=5
-          1  ambiguous:flank=1,nc=3
-          1  fail:nc_frag_not_in_occupied(n_zero=2)
+          1  ambiguous:flank=1,nc=4,4
+          1  ambiguous:flank=1,nc=9
+          1  ambiguous:flank=2,nc=1,1
+          1  ambiguous:flank=3,nc=2
+          1  ambiguous:flank=1,nc=1,3
+          1  ambiguous:flank=1,nc=5,2
+          1  ambiguous:flank=1,nc=10
+          1  ambiguous:flank=1,nc=15,1
+          1  ambiguous:flank=1,nc=12,1
+          1  ambiguous:flank=2,nc=1
+          1  ambiguous:flank=1,nc=5,5
+          1  ambiguous:flank=2,nc=2,2
   boundary_set_complete:
       12599  ok
       18292  partial:single_cutpoint_only
@@ -85,25 +129,25 @@
 ### RAW-SOURCE-READY HISTOGRAM — 1173-bag sweep scope ###
   (strict = boundary_set_complete=ok; +partial includes partial_single_cutpoint)
   threshold | strict | +partial
-      >=8   |     3  |     34
-      >=7   |    13  |     54
-      >=6   |    24  |     70
-      >=5   |    49  |     89
-      >=4   |    70  |    128
-      >=3   |   114  |    203
-      >=2   |   186  |    291
-      >=1   |   277  |    392
+      >=8   |     9  |    105
+      >=7   |    36  |    170
+      >=6   |    59  |    218
+      >=5   |   105  |    272
+      >=4   |   144  |    370
+      >=3   |   209  |    507
+      >=2   |   309  |    680
+      >=1   |   437  |    874
 
 ### RAW-SOURCE-READY HISTOGRAM — 4380-bag upstream (all) ###
   (strict = boundary_set_complete=ok; +partial includes partial_single_cutpoint)
   threshold | strict | +partial
-      >=8   |     4  |     92
-      >=7   |    19  |    126
-      >=6   |    42  |    161
-      >=5   |    81  |    214
-      >=4   |   148  |    302
-      >=3   |   237  |    437
-      >=2   |   407  |    685
-      >=1   |   869  |   1358
+      >=8   |    15  |    249
+      >=7   |    56  |    360
+      >=6   |   105  |    457
+      >=5   |   174  |    573
+      >=4   |   277  |    769
+      >=3   |   405  |   1074
+      >=2   |   642  |   1690
+      >=1   |  1286  |   3257
 
 DONE — per-site TSV: evidence/_audit/per_site_audit.final.tsv

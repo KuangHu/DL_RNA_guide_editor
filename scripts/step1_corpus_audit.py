@@ -48,30 +48,30 @@ SWEEP = Path("/global/home/users/kh36969/tools/DL_RNA_guide_edotor_classifer/con
 OUT_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-SPECIES_DIR = {
-    "abaum": ROOT / "abaumannii" / "genomes",
-    "kpneu": ROOT / "genomes" / "kpneumoniae",
-    "efaecalis": ROOT / "genomes_efaecalis",
-    "efaecium":  ROOT / "genomes_efaecium",
-}
-# Expanded species dir map derived from fail breakdown
-SPECIES_DIR_EXTRA = {
-    "ecoli": ROOT / "genomes" / "ecoli",
-    "bsubtilis": ROOT / "genomes" / "bsubtilis",
-    "lmonocytogenes": ROOT / "genomes" / "lmonocytogenes",
-    "sa_k24": ROOT / "genomes" / "staphaureus",
-    "cjejuni": ROOT / "genomes" / "cjejuni",
-    "hpylori": ROOT / "genomes" / "hpylori",
-    "ctrachomatis": ROOT / "genomes" / "ctrachomatis",
-    "senterica": ROOT / "genomes" / "senterica",
-    "paeruginosa": ROOT / "genomes" / "paeruginosa",
-    "ngonorrhoeae": ROOT / "genomes" / "ngonorrhoeae",
-    "mpneumoniae": ROOT / "genomes" / "mpneumoniae",
-    "mtuberculosis": ROOT / "genomes" / "mtuberculosis",
-    "spneumoniae": ROOT / "genomes" / "spneumoniae",
-    "tpallidum": ROOT / "genomes" / "tpallidum",
-}
-SPECIES_DIR.update(SPECIES_DIR_EXTRA)
+# Build a filesystem-wide {assembly_id -> path} index at startup. The
+# previous hardcoded species→dir map was wrong for most species (genomes
+# live in `genomes_<species>/` not `genomes/<species>/`, and some species
+# tags don't match the dir name — `sa_k24` → `genomes_saureus`). Scanning
+# removes the mapping entirely: existence is a direct lookup by assembly.
+def _build_assembly_index(root: Path) -> dict:
+    """Walk every `genomes*` dir (top-level and nested one deep) and index
+    every .fna recursively. Non-`__done_` copies win on duplicates.
+    """
+    idx = {}
+    cands = []
+    for p in root.iterdir():
+        if not p.is_dir(): continue
+        if p.name.startswith("genomes"): cands.append(p)
+        for sub in p.glob("genomes*"):
+            if sub.is_dir(): cands.append(sub)
+    for d in cands:
+        archive = "__done_" in str(d)
+        for fna in d.rglob("*.fna"):
+            if archive and fna.stem in idx:
+                continue
+            idx[fna.stem] = fna
+    return idx
+ASSEMBLY_INDEX = {}  # populated at main() time
 
 SITE_SUFFIX_RE = re.compile(r'\.(?:site|copy\d+)$')
 COMP = str.maketrans("ACGT", "TGCA")
@@ -81,6 +81,10 @@ def rc(s): return s.translate(COMP)[::-1]
 def log(*a):
     print(*a, flush=True)
 
+
+log("[0/7] building filesystem-wide assembly index …")
+ASSEMBLY_INDEX = _build_assembly_index(ROOT)
+log(f"  indexed {len(ASSEMBLY_INDEX)} assembly FASTAs across genomes* dirs")
 
 log("[1/7] loading sweep scope + adapted.jsonl …")
 sweep_bags = set()
@@ -213,10 +217,8 @@ for s in sites:
         base = ROOT / pr / "l2" / gd
         have_loci = (base / "loci.tsv").exists()
         have_alleles = alleles_exists.get(pkey, False)
-        sp = s["db_id"].split(".", 1)[0]
-        sp_dir = SPECIES_DIR.get(sp)
         seed = locus_row.get("seed_genome", "")
-        have_seed = bool(sp_dir and seed and (sp_dir / f"{seed}.fna").exists())
+        have_seed = bool(seed and seed in ASSEMBLY_INDEX)
         if have_loci and have_alleles and have_seed: raw = "ok"
         elif not have_loci: raw = "fail:loci_tsv_missing"
         elif not have_alleles: raw = "fail:alleles_fna_missing"
