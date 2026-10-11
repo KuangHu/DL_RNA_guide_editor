@@ -1,0 +1,109 @@
+[1/7] loading sweep scope + adapted.jsonl …
+  sweep scope: 1173 bag IDs
+  adapted.jsonl: 30891 sites across 4380 bags
+[2/7] loading cds_v3/insert_cds.tsv (bag → events) …
+  insert_cds.tsv: 95831 (bag, db_id) pairs
+  bags present: 4380
+[3/7] loading database_v3/insertions.tsv (db_id → locus) …
+  insertions.tsv: 11760 / 11760 db_ids resolved
+[4/7] loading each referenced l2/loci.tsv …
+  unique panel/genome_dir pairs: 3898
+  loaded loci.tsv for 3898 panels; missing: 0
+[5/7] computing joined / raw_files_exist / boundary_set_complete …
+  axes 1,2,4 computed
+[6/7] sequence_recovered (flank in empty + nc in occupied) …
+  panels to scan: 1311
+  …panel 100/1311
+  …panel 200/1311
+  …panel 300/1311
+  …panel 400/1311
+  …panel 500/1311
+  …panel 600/1311
+  …panel 700/1311
+  …panel 800/1311
+  …panel 900/1311
+  …panel 1000/1311
+  …panel 1100/1311
+  …panel 1200/1311
+  …panel 1300/1311
+  …panel 1311/1311
+[7/7] emitting per-site TSV + per-bag + summaries …
+  wrote evidence/_audit/per_site_audit.final.tsv
+  wrote per_bag_summary.tsv (4380 bags)
+
+### COVERAGE — 1173-bag sweep scope (8697 sites, 1173 bags) ###
+  joined:
+       8697  ok
+  raw_files_exist:
+       2631  ok
+       6066  fail:seed_genome_missing
+  sequence_recovered:
+       1261  ok
+       6066  fail:raw_files_not_ok
+       1289  fail:flank_not_in_empty
+         25  ambiguous:flank=1,nc=2,1
+         24  ambiguous:flank=1,nc=1,2
+         17  ambiguous:flank=1,nc=2
+          8  ambiguous:flank=1,nc=2,2
+          3  fail:nc_frag_not_in_occupied(n_zero=1)
+          1  ambiguous:flank=1,nc=1,4
+          1  ambiguous:flank=1,nc=5
+          1  ambiguous:flank=1,nc=3
+          1  fail:nc_frag_not_in_occupied(n_zero=2)
+  boundary_set_complete:
+       3843  ok
+       4854  partial:single_cutpoint_only
+
+### COVERAGE — 4380-bag upstream (all) (30891 sites, 4380 bags) ###
+  joined:
+      30891  ok
+  raw_files_exist:
+       9111  ok
+      21780  fail:seed_genome_missing
+  sequence_recovered:
+       3375  ok
+      21780  fail:raw_files_not_ok
+       5589  fail:flank_not_in_empty
+         50  ambiguous:flank=1,nc=2,1
+         34  ambiguous:flank=1,nc=1,2
+         32  ambiguous:flank=1,nc=2
+         14  ambiguous:flank=1,nc=2,2
+          7  fail:nc_frag_not_in_occupied(n_zero=1)
+          2  ambiguous:flank=1,nc=4
+          1  ambiguous:flank=1,nc=1,4
+          1  ambiguous:flank=1,nc=23,1
+          1  ambiguous:flank=1,nc=2,3
+          1  ambiguous:flank=1,nc=3,3
+          1  ambiguous:flank=1,nc=4,1
+          1  ambiguous:flank=1,nc=5
+          1  ambiguous:flank=1,nc=3
+          1  fail:nc_frag_not_in_occupied(n_zero=2)
+  boundary_set_complete:
+      12599  ok
+      18292  partial:single_cutpoint_only
+
+### RAW-SOURCE-READY HISTOGRAM — 1173-bag sweep scope ###
+  (strict = boundary_set_complete=ok; +partial includes partial_single_cutpoint)
+  threshold | strict | +partial
+      >=8   |     3  |     34
+      >=7   |    13  |     54
+      >=6   |    24  |     70
+      >=5   |    49  |     89
+      >=4   |    70  |    128
+      >=3   |   114  |    203
+      >=2   |   186  |    291
+      >=1   |   277  |    392
+
+### RAW-SOURCE-READY HISTOGRAM — 4380-bag upstream (all) ###
+  (strict = boundary_set_complete=ok; +partial includes partial_single_cutpoint)
+  threshold | strict | +partial
+      >=8   |     4  |     92
+      >=7   |    19  |    126
+      >=6   |    42  |    161
+      >=5   |    81  |    214
+      >=4   |   148  |    302
+      >=3   |   237  |    437
+      >=2   |   407  |    685
+      >=1   |   869  |   1358
+
+DONE — per-site TSV: evidence/_audit/per_site_audit.final.tsv
