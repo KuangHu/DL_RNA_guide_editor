@@ -429,17 +429,67 @@ them as cross-site target-recognizers at the 1 %-null-pass bar. This
 is a sharper read than v1/v2 produced; it matches the biology that
 not every bag with model signal is RNA-guided.
 
-### Known residual: multi-L / multi-nc_pos deduplication
+### Resolved in step 7: cross-L / cross-nc_pos cluster merging
 
-Phase C deduplicates clusters at the **same `(nc_pos, L)`** within
-`max_offset`, but not across different L values or different nc
-positions pointing at the same physical motif. The 185 passing clusters
-for CDS03597 collapse to **one** physical signal (the CCGCGCGCAGAGCC
-core at nc≈8, flank≈40). This inflates `n_pass_D` and `n_pub_thr` cosmetically
-but does not change the ranking: all 185 rows share the same per-site
-hits. A follow-up pass that merges across `(nc_pos ± margin, L ± 1)`
-when supporting-site sets agree is a step-7 cleanup; current behaviour
-is correct per-row.
+Phase C deduplicates within the SAME `(nc_pos, L)` only. Step 7 adds a
+greedy single-anchor merger
+(`scripts/v5a_framework/cluster_merging.py`) that collapses clusters
+representing the same physical motif viewed at different L or offset
+by a few bp.
+
+Merge rule: two clusters merge iff
+- `|nc_pos_i - nc_pos_j| ≤ cfg.nc_offset` (default 5)
+- `|flank_pos_median_i - flank_pos_median_j| ≤ cfg.flank_offset` (5)
+- `Jaccard(supporting_sites_i, supporting_sites_j) ≥ cfg.support_jaccard` (0.80)
+
+**Greedy single-anchor**, not union-find — the first draft used
+union-find and produced one 210-cluster group spanning nc_pos 0–34,
+flank_pos 13–50 because of transitive chain-linking across unrelated
+motifs. Greedy anchors at the best (max mean_m, max L) and absorbs
+only clusters within `±nc_offset` of the anchor, bounding group
+diameter at `2·nc_offset`.
+
+Representative = highest `mean_m_frac`, ties → largest `L`.
+`MergedRow` carries `n_merged, nc_pos_range, L_range,
+flank_pos_range, support_union`.
+
+**Three unit tests** (`scripts/tests/test_cluster_merging.py`):
+
+| # | case | outcome |
+|---|---|---|
+| 1 | 5 sliding-window variants (nc_pos 10–12, L 9–14, same support set, same flank_pos ±2) | 1 group; rep is L=14 (longest high-m) |
+| 2 | 5 chain-adjacent clusters at nc_pos 0, 5, 10, 15, 20 (same support) | **3 groups** (diameter ≤ 2·offset verified) — proves chain-linking is bounded |
+| 3 | 2 clusters with disjoint support sets at same nc_pos/flank_pos/L | 2 groups kept separate |
+
+### Step-6 top-4 results re-expressed under step-7 merging
+
+CDS03597's 185 publication-threshold-passing unmerged rows collapse to
+**10 distinct merged clusters** above the 0.89 bar. Top rows:
+
+```
+rank  rep nc  L   fp   mean_m  support  bg  n_merged  guide
+----  ------  --  ---  ------  -------  --  --------  ------------------
+ 1       7   14   39   1.000     4      4     33     AACCGCGCGCAGAG
+ 2      30   12   18   1.000     4      4     29     GAGTCCCTGTTT
+ 3      24   14   22   1.000     4      4     51     ACGATAGAGTCCCT
+ 4       1   14   45   1.000     4      4     37     TCGTCTAACCGCGC
+ 5      13   14   33   0.982     4      4     30     GCGCAGAGCCGACG
+ 6      19   13   28   0.981     4      4     10     AGCCGACGATAGA
+ 7      44   12    4   0.938     4      4      1     GCGCCCGGCTGC
+ 8      21    9   30   0.917     4      4      2     CCGACGATA
+ 9      14    9   37   0.917     4      4      3     CGCAGAGCC
+10      12    9   39   0.917     4      4      5     CGCGCAGAG
+```
+
+Reading the pattern: nc_pos monotonically increases (1 → 44) while
+flank_pos monotonically decreases (45 → 4). This is characteristic of
+**one long contiguous RC pairing** between nc≈1–50 and flank≈0–50,
+not ten independent motifs. The merger produces the right-granularity
+report (per-subwindow evidence); interpreting them as one physical
+pairing is a biological read, not a dedup task.
+
+CDS04337 / CDS02973 / CDS00113: 209 / 24 / 50 merged clusters
+respectively, **zero** above the 0.89 publication threshold.
 
 ## Status
 
@@ -451,7 +501,8 @@ is correct per-row.
 | 4 | D full + apply_phase_d_gate | 7, 8 permissive, 8 strict, mixed | DONE |
 | 5 | G 4-null calibration + case 1-strict | 500-bag calibration + non-best cluster recovery through A→C | DONE |
 | 6 | ranking + final output schema | `scripts/run_v3_scorer.py` + applied to top-4 | DONE |
-| 7 (follow-up) | multi-L / multi-nc_pos dedup; apply to all `all_candidates/` | — | pending |
+| 7a | multi-L / multi-nc_pos merge + 3 unit tests + applied to top-4 | DONE |
+| 7b | apply v3 to all 1173 `all_candidates/` bags (Slurm 26837369) | running |
 
 ### What's not yet done (step 6)
 
@@ -474,8 +525,9 @@ scripts/v5a_framework/
     motif_gates.py                # Phase B
     null_generators.py            # Phase G nulls
     pipeline.py                   # unified A→D runner
+    cluster_merging.py            # step 7 greedy single-anchor merger
 scripts/
-    run_v3_scorer.py              # step 6 output driver
+    run_v3_scorer.py              # step 6+7 output driver
     calibrate_v3_nulls.py         # Phase G driver
     analyze_v3_calib.py           # Phase G post-processor
     model_free_scorer.py          # v1 (unchanged, reference)
@@ -485,8 +537,12 @@ scripts/tests/
     test_phase_b_motif_gates.py
     test_phase_c_clustering.py    # cases 1-strict, 6, 9, 12
     test_phase_d_background.py
+    test_cluster_merging.py       # merge cases 1, 2, 3
 sbatch/
     v3_calib_nulls.sbatch
+    v3_sweep_all_candidates.sbatch
+config/
+    v3_sweep_cids.txt             # 1173 all_candidates CIDs
 docs/
     model_free_scorer_v3.md       # this file
 ```
