@@ -769,6 +769,61 @@ The current status of CDS03597 is unchanged by this commit:
    boundary-variable range; merge sites 4 and 7 for background
    counting.
 
+### Reviewer R1-R4 fixes (2026-10-11)
+
+**R1** — real coord mapping replaces the first-anchor-hit scheme.
+`scripts/nc_coord_mapping.py` locates every full-length match of each
+nc fragment on both strands of occupied, reports (lo, hi, strand)
+only when unique, flags ambiguous/missing cases, and handles the
+N-spacer explicitly. Verified on CDS03597: all four sites' both
+fragments uniquely located. `nc_frag_1` sits at occupied positions
+{1900, 1635, 1722, 701} — NOT at `b0 + len(frag_0) + SPACER_N`,
+confirming the `b0 + nc_pos` shortcut is wrong for any nc_pos ≥
+len(frag_0).
+
+**R2** — ORF/MSA projects the FULL motif interval `[p, p+L)` and
+uses the correct reverse interval `[N-p-L, N-p)` for strand='−' sites.
+Previous code mapped only the first byte, which after reverse becomes
+the motif END, not START. Rerunning on CDS03597 reproduces the
+reviewer-expected intervals EXACTLY:
+
+| site | strand | motif in occupied | motif in oriented | MSA col [lo, hi) |
+|---|---|---|---|---|
+| 0 | + | [221, 235) | [221, 235) | **[89, 103)** |
+| 4 | − | [98, 112)  | [2112, 2126) | **[1875, 1889)** |
+| 6 | − | [250, 264) | [1968, 1982) | **[1810, 1824)** |
+| 7 | − | [140, 154) | [2071, 2085) | **[1833, 1847)** |
+
+Site 0 vs 4/6/7 at opposite element ends is unchanged; just now
+reported as proper intervals.
+
+**R3** — Phase D v2 background now uses Needleman-Wunsch gapped
+alignment (affine gaps, O(la*lb)) separately for left and right flanks,
+reports identity + coverage + indel count per side. Reviewer test
+"100 bp same + 1 bp internal insertion" verified: old
+offset_tolerant_identity → 0.640; new gapped identity → **0.990**
+with 1 indel detected. Also added guard: refuse ortho merging when
+`pre_event_genome` or `pre_event_contig` is empty. Merging logic
+switched to use the HIGHER-identity side's gapped identity (instead
+of concatenated identity, which diluted the signal when one side was
+edge-insufficient).
+
+**R4** — Phase C float median replaces int truncation. Reviewer
+counter-example `[0,1,10,10]` with max_offset=5: pre-R4 int(5.5)=5
+window keeps supporter at 0 (|0 − 5| = 5 ≤ 5) despite being 5.5 bp
+from true median; post-R4 float median 5.5 correctly drops it
+(|0 − 5.5| = 5.5 > 5). Added `scripts/tests/test_phase_c_r4_fixtures.py`
+with FOUR exact-hit fixture cases that build `BagRetention` /
+`SiteRetention` / `Hit` objects directly (bypassing random-bg
+contamination). Case 18 `[0,1,10,10]` passes on post-R4, would have
+failed on pre-R4. CDS03597 known cluster (nc_pos=1, L=14, fp=45)
+still emits with 4 supports and mean_m_frac=1.0 after the switch;
+total passing-cluster count 755 → 745 (10 borderline clusters now
+correctly rejected by the tighter float window).
+
+Also updated `scripts/tests/test_phase_c_clustering.py` format string
+to accept float median (`:5.1f` instead of `:3d`).
+
 ### Status propagated to the other candidates
 
 The alignment inspection has only been performed on CDS03597 and (in

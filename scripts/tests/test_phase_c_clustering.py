@@ -75,7 +75,7 @@ def test_case6_multiple_positions_per_site():
     print(f"  total clusters: {len(clusters)}")
     print(f"  at (nc_pos=100, L={L}): {len(target)}")
     for c in sorted(target, key=lambda c: c.flank_pos_median):
-        print(f"    flank_pos_median={c.flank_pos_median:3d}  "
+        print(f"    flank_pos_median={c.flank_pos_median:5.1f}  "
               f"mad={c.flank_pos_mad:.1f}  "
               f"n_support={c.n_support}  "
               f"support_frac={c.support_frac:.2f}  "

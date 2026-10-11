@@ -57,20 +57,28 @@ def ortho_groups(site_locus_info: dict[int, dict],
                    overlap_bp: int = 100,
                    ) -> list[list[int]]:
     """Group sites by (pre_event_genome, pre_event_contig) + locus coord
-    overlap >= overlap_bp. Returns list of groups (each a list of site_idx).
+    overlap >= overlap_bp. Returns list of groups.
+
+    R3 guard: refuse to merge based on an empty/missing pre_event_genome
+    or pre_event_contig. Two sites with both fields blank are NOT the
+    same orthologous locus — they are two sites with no provenance.
     """
     sites = sorted(site_locus_info)
     parent = {s: s for s in sites}
     def find(x):
         while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
+            parent[x] = parent[parent[x]]; x = parent[x]
         return x
     def union(a, b):
         parent[find(a)] = find(b)
     for i, si in enumerate(sites):
         for sj in sites[i + 1:]:
             ai, aj = site_locus_info[si], site_locus_info[sj]
+            # Reject empty/missing provenance fields
+            if not ai.get("pre_event_genome") or not aj.get("pre_event_genome"):
+                continue
+            if not ai.get("pre_event_contig") or not aj.get("pre_event_contig"):
+                continue
             if ai["pre_event_genome"] != aj["pre_event_genome"]: continue
             if ai["pre_event_contig"] != aj["pre_event_contig"]: continue
             lo = max(ai["start"], aj["start"])
@@ -84,10 +92,73 @@ def ortho_groups(site_locus_info: dict[int, dict],
     return sorted(gmap.values(), key=lambda g: g[0])
 
 
+def gapped_identity(a: str, b: str, gap_open: int = -2, gap_ext: int = -1,
+                       match: int = 1, mismatch: int = -1,
+                       ) -> tuple[float, int, int, int]:
+    """R3: Needleman-Wunsch global alignment, affine gaps.
+    Returns (identity, coverage_length_bp, n_matches, n_indels).
+
+    Identity = matches / aligned_length (both counted over the gapped
+    alignment). Coverage = aligned_length (excluding leading/trailing
+    gaps on either sequence — so a tiny common core doesn't inflate
+    identity). n_indels is the count of gap characters in the alignment
+    (both sequences combined).
+
+    This replaces offset_tolerant_identity, which only slides without
+    allowing internal gaps and misclassifies "same 100 bp sequence with
+    1 bp insertion" as ~65 % identity.
+    """
+    if not a or not b: return (0.0, 0, 0, 0)
+    la, lb = len(a), len(b)
+    # Simple O(la*lb) NW with affine gaps. For our use case (both ≤ ~120 bp)
+    # this is fine.
+    NEG = -10**9
+    M  = [[NEG] * (lb + 1) for _ in range(la + 1)]
+    IX = [[NEG] * (lb + 1) for _ in range(la + 1)]
+    IY = [[NEG] * (lb + 1) for _ in range(la + 1)]
+    M[0][0] = 0
+    for i in range(1, la + 1):
+        IX[i][0] = gap_open + (i - 1) * gap_ext
+    for j in range(1, lb + 1):
+        IY[0][j] = gap_open + (j - 1) * gap_ext
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            s = match if a[i - 1] == b[j - 1] else mismatch
+            M[i][j]  = max(M[i-1][j-1], IX[i-1][j-1], IY[i-1][j-1]) + s
+            IX[i][j] = max(M[i-1][j] + gap_open, IX[i-1][j] + gap_ext)
+            IY[i][j] = max(M[i][j-1] + gap_open, IY[i][j-1] + gap_ext)
+    # Traceback for identity/coverage/indels
+    i, j = la, lb
+    final_scores = {"M": M[la][lb], "IX": IX[la][lb], "IY": IY[la][lb]}
+    state = max(final_scores, key=final_scores.get)
+    aligned_len = n_match = n_indel = 0
+    while i > 0 or j > 0:
+        aligned_len += 1
+        if state == "M":
+            if a[i-1] == b[j-1]: n_match += 1
+            cands = [("M", M[i-1][j-1]), ("IX", IX[i-1][j-1]),
+                      ("IY", IY[i-1][j-1])]
+            next_state = max(cands, key=lambda t: t[1])[0] if i > 0 and j > 0 else "M"
+            i -= 1; j -= 1; state = next_state
+        elif state == "IX":
+            n_indel += 1
+            cands = [("M", M[i-1][j]), ("IX", IX[i-1][j])]
+            next_state = max(cands, key=lambda t: t[1])[0]
+            i -= 1; state = next_state
+        else:  # IY
+            n_indel += 1
+            cands = [("M", M[i][j-1]), ("IY", IY[i][j-1])]
+            next_state = max(cands, key=lambda t: t[1])[0]
+            j -= 1; state = next_state
+    identity = n_match / aligned_len if aligned_len else 0.0
+    return (identity, aligned_len, n_match, n_indel)
+
+
+# Kept for backward compat; new code should call gapped_identity.
 def offset_tolerant_identity(a: str, b: str, max_offset: int = 5,
                                ) -> tuple[float, int, int]:
-    """Return (best_identity, coverage_length_bp, best_offset).
-    Slides a vs b by [-max_offset..+max_offset], keeps best identity."""
+    """Legacy offset-only identity (no internal indels). Use
+    gapped_identity for new code."""
     if not a or not b: return (0.0, 0, 0)
     best = (-1.0, 0, 0)
     for off in range(-max_offset, max_offset + 1):
@@ -167,7 +238,7 @@ def main():
     flanks_per_site = {ss.site_idx: sites[ss.site_idx]["inputs"]["flank"]
                         for ss in cluster.supporting_sites}
 
-    # 5. Offset-tolerant pairwise identity + repeat source
+    # 5. R3: gapped pairwise identity for left & right background separately
     pair_rows = []
     for i, ssi in enumerate(cluster.supporting_sites):
         for ssj in cluster.supporting_sites[i + 1:]:
@@ -180,21 +251,30 @@ def main():
                 return f[:lo], f[hi:]
             L_A, R_A = masked(fA, ssi.chosen_hit.flank_pos)
             L_B, R_B = masked(fB, ssj.chosen_hit.flank_pos)
-            left = offset_tolerant_identity(L_A, L_B, args.max_offset)
-            right = offset_tolerant_identity(R_A, R_B, args.max_offset)
-            concat_A = L_A + R_A
-            concat_B = L_B + R_B
-            concat = offset_tolerant_identity(concat_A, concat_B, args.max_offset)
-            # Determine repeat_source
-            best_side = max([("left", left), ("right", right), ("concat", concat)],
-                             key=lambda kv: kv[1][0])
+            # R3: gapped NW alignment handles internal indels; separate per side
+            left_id, left_cov, left_m, left_g = gapped_identity(L_A, L_B)
+            right_id, right_cov, right_m, right_g = gapped_identity(R_A, R_B)
+            # Determine repeat_source — the side (left / right) carrying the
+            # higher identity, weighted lightly by coverage (identity breaks ties).
+            if left_cov == 0 and right_cov == 0:
+                best_side = "none"
+                best_id, best_cov, best_m, best_g = 0.0, 0, 0, 0
+            elif left_id >= right_id:
+                best_side = "left"
+                best_id, best_cov, best_m, best_g = left_id, left_cov, left_m, left_g
+            else:
+                best_side = "right"
+                best_id, best_cov, best_m, best_g = right_id, right_cov, right_m, right_g
             pair_rows.append({
                 "si": si, "sj": sj,
-                "left_identity": left[0], "left_cov": left[1], "left_offset": left[2],
-                "right_identity": right[0], "right_cov": right[1], "right_offset": right[2],
-                "concat_identity": concat[0], "concat_cov": concat[1], "concat_offset": concat[2],
-                "repeat_source": best_side[0], "repeat_source_identity": best_side[1][0],
-                "repeat_source_cov": best_side[1][1],
+                "left_identity": left_id, "left_cov": left_cov,
+                "left_matches": left_m, "left_indels": left_g,
+                "right_identity": right_id, "right_cov": right_cov,
+                "right_matches": right_m, "right_indels": right_g,
+                "repeat_source": best_side,
+                "repeat_source_identity": best_id,
+                "repeat_source_cov": best_cov,
+                "repeat_source_indels": best_g,
                 "same_ortho_group": any(si in g and sj in g for g in ortho),
             })
 
@@ -212,9 +292,14 @@ def main():
         for s in g[1:]:
             if s in parent and g[0] in parent:
                 union(g[0], s)
-    # Then merge by sequence identity (same logic as current Phase D)
+    # Then merge by sequence identity. R3: use the higher-identity side's
+    # gapped identity + its coverage, instead of a concatenated identity.
+    # Reasoning: when one side is edge-insufficient, concatenation dilutes
+    # the signal from the usable side. A single clean side above threshold
+    # is clonal evidence.
     for r in pair_rows:
-        if r["concat_identity"] > args.clonal_threshold and r["concat_cov"] >= 20:
+        if r["repeat_source_identity"] > args.clonal_threshold \
+                and r["repeat_source_cov"] >= 20:
             if r["si"] in parent and r["sj"] in parent:
                 union(r["si"], r["sj"])
     merged = {}
@@ -238,16 +323,17 @@ def main():
             f.write(f"{g[0]}\t{','.join(str(x) for x in g)}\n")
 
     with (out / "pairwise.tsv").open("w") as f:
-        f.write("si\tsj\tsame_ortho\tleft_id\tleft_cov\tleft_off\t"
-                "right_id\tright_cov\tright_off\tconcat_id\tconcat_cov\t"
-                "concat_off\trepeat_source\trepeat_src_id\trepeat_src_cov\n")
+        f.write("si\tsj\tsame_ortho\tleft_id\tleft_cov\tleft_matches\tleft_indels\t"
+                "right_id\tright_cov\tright_matches\tright_indels\t"
+                "repeat_source\trepeat_src_id\trepeat_src_cov\trepeat_src_indels\n")
         for r in pair_rows:
             f.write(f"{r['si']}\t{r['sj']}\t{r['same_ortho_group']}\t"
-                     f"{r['left_identity']:.3f}\t{r['left_cov']}\t{r['left_offset']}\t"
-                     f"{r['right_identity']:.3f}\t{r['right_cov']}\t{r['right_offset']}\t"
-                     f"{r['concat_identity']:.3f}\t{r['concat_cov']}\t{r['concat_offset']}\t"
+                     f"{r['left_identity']:.3f}\t{r['left_cov']}\t"
+                     f"{r['left_matches']}\t{r['left_indels']}\t"
+                     f"{r['right_identity']:.3f}\t{r['right_cov']}\t"
+                     f"{r['right_matches']}\t{r['right_indels']}\t"
                      f"{r['repeat_source']}\t{r['repeat_source_identity']:.3f}\t"
-                     f"{r['repeat_source_cov']}\n")
+                     f"{r['repeat_source_cov']}\t{r['repeat_source_indels']}\n")
 
     # 8. Compare to current Phase D
     with (out / "comparison.md").open("w") as f:
@@ -267,16 +353,16 @@ def main():
         f.write(f"- ortho_locus_groups (from loci.tsv): {ortho}\n")
         f.write(f"- n_local_bg_groups_v2 (ortho + seq merge): {n_groups_v2}\n")
         f.write(f"- groups: {merged_groups}\n\n")
-        f.write(f"## Per-pair repeat source\n")
-        f.write("| si | sj | same_ortho | left_id | left_cov | right_id | right_cov | "
-                 "concat_id | concat_cov | repeat_source |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write(f"## Per-pair repeat source (gapped identity, R3)\n")
+        f.write("| si | sj | same_ortho | left_id | left_cov | left_indels | "
+                 "right_id | right_cov | right_indels | repeat_source | src_id | src_cov |\n")
+        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in pair_rows:
             f.write(f"| {r['si']} | {r['sj']} | {r['same_ortho_group']} | "
-                     f"{r['left_identity']:.3f} | {r['left_cov']} | "
-                     f"{r['right_identity']:.3f} | {r['right_cov']} | "
-                     f"{r['concat_identity']:.3f} | {r['concat_cov']} | "
-                     f"{r['repeat_source']} |\n")
+                     f"{r['left_identity']:.3f} | {r['left_cov']} | {r['left_indels']} | "
+                     f"{r['right_identity']:.3f} | {r['right_cov']} | {r['right_indels']} | "
+                     f"{r['repeat_source']} | {r['repeat_source_identity']:.3f} | "
+                     f"{r['repeat_source_cov']} |\n")
 
     print(f"\nCurrent Phase D: n_local_bg_groups={orig_bg.n_local_bg_groups}  "
           f"groups={[g.members for g in orig_bg.groups]}  passes={orig_bg.passes_bg_gate}")

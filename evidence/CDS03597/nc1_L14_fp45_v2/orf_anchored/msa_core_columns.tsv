@@ -1,5 +1,5 @@
-site	core_a_pos_occupied	core_a_pos_oriented	insert_lo_in_oriented	insert_hi_in_oriented	core_a_offset_in_insert_oriented	msa_column
-0	221	221	220	2044	1	89
-4	98	2125	303	2127	1822	1888
-6	250	1981	159	1983	1822	1823
-7	140	2084	261	2086	1823	1846
+site	orf_strand	core_occ_lo	core_occ_hi	core_ori_lo	core_ori_hi	insert_lo_in_oriented	insert_hi_in_oriented	msa_col_lo	msa_col_hi
+0	+	221	235	221	235	220	2044	89	103
+4	-	98	112	2112	2126	303	2127	1875	1889
+6	-	250	264	1968	1982	159	1983	1810	1824
+7	-	140	154	2071	2085	261	2086	1833	1847

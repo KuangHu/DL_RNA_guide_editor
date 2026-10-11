@@ -1,7 +1,7 @@
-si	sj	same_ortho	left_id	left_cov	left_off	right_id	right_cov	right_off	concat_id	concat_cov	concat_off	repeat_source	repeat_src_id	repeat_src_cov
-0	4	False	0.487	39	-3	0.357	56	2	0.340	97	-3	left	0.487	39
-0	6	False	0.359	39	3	0.415	53	-5	0.337	95	-5	right	0.415	53
-0	7	False	0.405	37	5	0.426	54	-4	0.370	100	0	right	0.426	54
-4	6	False	0.282	39	-3	0.375	56	-2	0.295	95	5	right	0.375	56
-4	7	True	0.368	38	-4	0.351	57	-1	0.323	99	-1	left	0.368	38
-6	7	False	0.316	38	-4	0.439	57	1	0.330	100	0	right	0.439	57
+si	sj	same_ortho	left_id	left_cov	left_matches	left_indels	right_id	right_cov	right_matches	right_indels	repeat_source	repeat_src_id	repeat_src_cov	repeat_src_indels
+0	4	False	0.489	47	23	10	0.508	63	32	10	right	0.508	63	10
+0	6	False	0.400	45	18	6	0.470	66	31	16	right	0.470	66	16
+0	7	False	0.532	47	25	10	0.477	65	31	14	left	0.532	47	10
+4	6	False	0.396	48	19	12	0.444	63	28	10	right	0.444	63	10
+4	7	True	0.458	48	22	12	0.443	61	27	6	left	0.458	48	12
+6	7	False	0.404	47	19	10	0.533	60	32	4	right	0.533	60	4

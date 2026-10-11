@@ -34,8 +34,8 @@ class SupportingSite:
     """One site's contribution to one cluster."""
     site_idx: int
     chosen_hit: Hit
-    rank_within_site: int    # 1 = this site's best hit at (nc_pos, L)
-    offset_from_median: int  # chosen_hit.flank_pos - cluster.flank_pos_median
+    rank_within_site: int       # 1 = this site's best hit at (nc_pos, L)
+    offset_from_median: float   # R4: float (chosen_hit.flank_pos - cluster.flank_pos_median)
     n_hits_this_site_at_nc_pos_L: int   # multiplicity signal (ambiguity)
 
 
@@ -43,7 +43,7 @@ class SupportingSite:
 class Cluster:
     nc_pos: int
     L: int
-    flank_pos_median: int
+    flank_pos_median: float       # R4: float (half-bp median preserved)
     flank_pos_mad: float          # median absolute deviation
     flank_pos_min: int
     flank_pos_max: int
@@ -57,7 +57,7 @@ class Cluster:
     mean_hit_multiplicity_at_nc_pos_L: float
     orient_counts: dict            # {'fwd': int, 'rc': int}
 
-    def key(self) -> tuple[int, int, int]:
+    def key(self) -> tuple[int, int, float]:
         return (self.nc_pos, self.L, self.flank_pos_median)
 
 
@@ -105,49 +105,70 @@ def _select_supporters_at_center(center: int,
     return out
 
 
+def _select_supporters_at_center_float(center: float,
+                                          ranked_by_site: dict[int, list[tuple[int, Hit]]],
+                                          ties_for_best_by_site: dict[int, int],
+                                          max_offset: int) -> list[SupportingSite]:
+    """Like _select_supporters_at_center but center may be fractional."""
+    lo, hi = center - max_offset, center + max_offset
+    out: list[SupportingSite] = []
+    for s, ranked in ranked_by_site.items():
+        in_win = [(r, h) for r, h in ranked if lo <= h.flank_pos <= hi]
+        if not in_win:
+            continue
+        in_win.sort(key=lambda rh: (abs(rh[1].flank_pos - center),
+                                     -rh[1].m, rh[1].flank_pos))
+        r, h = in_win[0]
+        out.append(SupportingSite(
+            site_idx=s, chosen_hit=h, rank_within_site=r,
+            offset_from_median=0.0,
+            n_hits_this_site_at_nc_pos_L=ties_for_best_by_site[s],
+        ))
+    return out
+
+
 def _iterative_trim_to_median_window(supporters: list[SupportingSite],
                                        max_offset: int,
                                        min_support: int,
                                        ranked_by_site: dict[int, list[tuple[int, Hit]]],
                                        ties_for_best_by_site: dict[int, int],
                                        max_iter: int = 20,
-                                       ) -> tuple[list[SupportingSite], int]:
-    """P2b bug-2 fix: iteratively re-select supporters around the running
-    median until two consecutive iterations give the SAME supporters at the
-    SAME median AND every supporter is within max_offset of that median.
+                                       ) -> tuple[list[SupportingSite], float]:
+    """R4: iterate using FLOAT median. For [0,1,10,10] the true median is
+    5.5 — truncating to 5 kept a supporter 5.5 bp from the true median
+    inside a max_offset=5 window. Float median tightens the window to
+    [0.5, 10.5] and correctly drops the supporter at 0.
 
-    Returns (final_supporters, final_median_or_-1_if_empty).
+    Returns (final_supporters, final_median_or_-1.0_if_empty).
     """
     prev_sig: tuple | None = None
     for _ in range(max_iter):
         if len(supporters) < min_support:
-            return [], -1
+            return [], -1.0
         positions = [ss.chosen_hit.flank_pos for ss in supporters]
-        fpm = int(median(positions))
-        rebuilt = _select_supporters_at_center(fpm, ranked_by_site,
-                                                 ties_for_best_by_site, max_offset)
+        fpm = float(median(positions))
+        rebuilt = _select_supporters_at_center_float(
+            fpm, ranked_by_site, ties_for_best_by_site, max_offset)
         if len(rebuilt) < min_support:
-            return [], -1
+            return [], -1.0
         new_positions = [ss.chosen_hit.flank_pos for ss in rebuilt]
-        new_fpm = int(median(new_positions))
+        new_fpm = float(median(new_positions))
         new_sig = (new_fpm, tuple(sorted((ss.site_idx, ss.chosen_hit.flank_pos)
                                            for ss in rebuilt)))
         if new_sig == prev_sig:
-            # Fixed point: supporters stable AND median stable
             final = [ss for ss in rebuilt
                       if abs(ss.chosen_hit.flank_pos - new_fpm) <= max_offset]
             if len(final) < min_support:
-                return [], -1
+                return [], -1.0
             return final, new_fpm
         prev_sig = new_sig
         supporters = rebuilt
-    # No convergence within max_iter — return current state if valid
     positions = [ss.chosen_hit.flank_pos for ss in supporters]
-    fpm = int(median(positions))
+    fpm = float(median(positions))
     final = [ss for ss in supporters
               if abs(ss.chosen_hit.flank_pos - fpm) <= max_offset]
     if len(final) < min_support:
-        return [], -1
+        return [], -1.0
     return final, fpm
 
 
@@ -209,7 +230,7 @@ def enumerate_clusters(bag: BagRetention,
             positions = [ss.chosen_hit.flank_pos for ss in supporters]
             fp_mad = _mad(positions)
             for ss in supporters:
-                ss.offset_from_median = ss.chosen_hit.flank_pos - fpm
+                ss.offset_from_median = float(ss.chosen_hit.flank_pos) - fpm
             m_fracs = [ss.chosen_hit.m / L for ss in supporters]
             orient_counts = {"fwd": 0, "rc": 0}
             for ss in supporters:

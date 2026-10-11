@@ -288,15 +288,24 @@ def main():
     msa = read_fna_records(msa_path)
     print(f"MSA built: {len(msa)} rows, {len(msa[0][1])} alignment columns")
 
-    # 5. Project each site's core_a_pos (from occupied) into oriented frame
-    #    and then into MSA column.
-    # occupied → oriented mapping: identity if strand '+', else len-pos-1
-    def occ_to_oriented(d, pos_in_occ: int) -> int:
-        if d["orf_strand"] == "+":
-            return pos_in_occ
-        return d["occupied_len"] - 1 - pos_in_occ
+    # 5. R2 fix: project the FULL motif interval [p, p+L) from occupied
+    #    into the ORIENTED insert frame, then into MSA columns.
+    #
+    #    For strand '+' the occupied interval [p, p+L) maps to the
+    #    oriented interval [p, p+L) unchanged.
+    #    For strand '-' we revcomp the whole occupied, so position p
+    #    in occupied becomes position N-1-p in oriented. The L-mer
+    #    occupied[p : p+L) occupies oriented positions
+    #    [N-p-L, N-p). This is the CORRECT reverse interval the
+    #    reviewer flagged — the old code mapped only the first byte
+    #    (which, after reverse, is the motif's END, not its START).
 
-    # Load the core positions from occupied_core_stability.tsv
+    def occ_interval_to_oriented(d, lo: int, hi: int) -> tuple[int, int]:
+        N = d["occupied_len"]
+        if d["orf_strand"] == "+":
+            return (lo, hi)
+        return (N - hi, N - lo)
+
     core_a_positions = {}
     with (args.evidence_dir / "occupied_core_stability.tsv").open() as f:
         hdr = f.readline().rstrip("\n").split("\t")
@@ -306,7 +315,6 @@ def main():
             sid = row["site_idx"]
             core_a_positions[sid] = int(row["core_a_pos_in_occupied"])
 
-    # oriented pos → MSA column: walk the MSA sequence, counting non-gap chars
     def oriented_pos_to_msa_col(aligned: str, ctx_lo_in_oriented: int,
                                  oriented_pos: int) -> int:
         off_in_ctx = oriented_pos - ctx_lo_in_oriented
@@ -320,27 +328,36 @@ def main():
         return -1
 
     with (out / "msa_core_columns.tsv").open("w") as f:
-        f.write("site\tcore_a_pos_occupied\tcore_a_pos_oriented\t"
+        f.write("site\torf_strand\tcore_occ_lo\tcore_occ_hi\t"
+                "core_ori_lo\tcore_ori_hi\t"
                 "insert_lo_in_oriented\tinsert_hi_in_oriented\t"
-                "core_a_offset_in_insert_oriented\tmsa_column\n")
+                "msa_col_lo\tmsa_col_hi\n")
         rows_for_summary = []
         for name, aligned in msa:
             sid = name.split("_")[1]
             d = per_site[sid]
             core_occ = core_a_positions[sid]
-            core_ori = occ_to_oriented(d, core_occ)
-            off_in_insert = core_ori - d["ins_lo_in_oriented"]
-            col = oriented_pos_to_msa_col(aligned, d["ins_lo_in_oriented"],
-                                            core_ori)
-            f.write(f"{sid}\t{core_occ}\t{core_ori}\t"
+            # FULL motif interval in occupied = [core_occ, core_occ + L)
+            lo_occ, hi_occ = core_occ, core_occ + args.L
+            lo_ori, hi_ori = occ_interval_to_oriented(d, lo_occ, hi_occ)
+            col_lo = oriented_pos_to_msa_col(aligned, d["ins_lo_in_oriented"],
+                                               lo_ori)
+            # End of interval = position of last base + 1 → map (hi_ori - 1)
+            # then advance one column
+            end_last = oriented_pos_to_msa_col(aligned, d["ins_lo_in_oriented"],
+                                                  hi_ori - 1)
+            col_hi = end_last + 1 if end_last >= 0 else -1
+            f.write(f"{sid}\t{d['orf_strand']}\t{lo_occ}\t{hi_occ}\t"
+                     f"{lo_ori}\t{hi_ori}\t"
                      f"{d['ins_lo_in_oriented']}\t{d['ins_hi_in_oriented']}\t"
-                     f"{off_in_insert}\t{col}\n")
-            rows_for_summary.append((sid, col))
+                     f"{col_lo}\t{col_hi}\n")
+            rows_for_summary.append((sid, col_lo, col_hi))
 
-    cols = [c for _, c in rows_for_summary if c >= 0]
-    if cols:
-        col_med = sorted(cols)[len(cols) // 2]
-        max_dev = max(abs(c - col_med) for c in cols)
+    starts = [cl for _, cl, _ in rows_for_summary if cl >= 0]
+    ends = [ch for _, _, ch in rows_for_summary if ch >= 0]
+    if starts:
+        col_med = sorted(starts)[len(starts) // 2]
+        max_dev = max(abs(c - col_med) for c in starts)
     else:
         col_med, max_dev = -1, -1
 
@@ -360,13 +377,22 @@ def main():
                      f"{d['insert_start_in_occupied']} | {d['anchor_pos_in_oriented']} |\n")
         f.write(f"\n## MSA\n")
         f.write(f"Rows: {len(msa)}, columns: {len(msa[0][1])}\n\n")
-        f.write(f"## Core-a position (guide inside insert) projected into MSA columns\n")
-        f.write("| site | core_a_pos (occupied) | MSA column |\n")
-        f.write("|---|---|---|\n")
-        for sid, col in rows_for_summary:
-            f.write(f"| {sid} | {core_a_positions[sid]} | {col} |\n")
-        f.write(f"\n**MSA-column spread of core_a across sites:**\n")
-        f.write(f"- cols: {sorted(cols)}\n")
+        f.write(f"## Full motif interval [p, p+L) projected into MSA columns\n")
+        f.write(f"For strand='-' sites the reverse interval in oriented frame is "
+                 f"[N-p-L, N-p). The reviewer's expected intervals are "
+                 f"site 0 [89,103), site 4 [1875,1889), site 6 [1810,1824), "
+                 f"site 7 [1833,1847).\n\n")
+        f.write("| site | strand | core occ [lo, hi) | core ori [lo, hi) | MSA col [lo, hi) |\n")
+        f.write("|---|---|---|---|---|\n")
+        for sid, col_lo, col_hi in rows_for_summary:
+            d = per_site[sid]
+            core_occ = core_a_positions[sid]
+            lo_ori, hi_ori = occ_interval_to_oriented(d, core_occ, core_occ + args.L)
+            f.write(f"| {sid} | {d['orf_strand']} | "
+                     f"[{core_occ}, {core_occ + args.L}) | "
+                     f"[{lo_ori}, {hi_ori}) | [{col_lo}, {col_hi}) |\n")
+        f.write(f"\n**MSA-column spread of motif START across sites:**\n")
+        f.write(f"- cols: {sorted(starts)}\n")
         f.write(f"- median: {col_med}\n")
         f.write(f"- max deviation: {max_dev}\n\n")
         if max_dev >= 0 and max_dev <= 5:
@@ -395,8 +421,10 @@ def main():
                      "intermediate case.\n")
 
     print(f"\n=== VERDICT ===")
-    print(f"Core-a MSA columns per site: {[(sid, col) for sid, col in rows_for_summary]}")
-    print(f"Median column: {col_med}  max deviation: {max_dev}")
+    print(f"Motif MSA intervals per site [col_lo, col_hi):")
+    for sid, col_lo, col_hi in rows_for_summary:
+        print(f"  site {sid}: [{col_lo}, {col_hi})")
+    print(f"Median START column: {col_med}  max deviation: {max_dev}")
     print(f"Report: {verdict}")
 
 
