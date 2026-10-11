@@ -1,0 +1,50 @@
+LOCUS       kpneu_E002471           1825 bp    DNA              UNK 01-JAN-1980
+DEFINITION  CDS03597 insert sequence (1824 bp family).
+ACCESSION   kpneu.E002471
+VERSION     kpneu.E002471
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+COMMENT     bag_id: CDS03597
+            db_id: kpneu.E002471
+            dominant_orf: kpneu.E002471_2 (239 aa)
+FEATURES             Location/Qualifiers
+     CDS             1..1825
+                     /gene="kpneu.E002471_2"
+                     /note="dominant_orf kpneu.E002471_2; aa_len approximately
+                     239; bag_id CDS03597; exact nucleotide coord not stored in
+                     insert file"
+ORIGIN
+        1 ttttagcgca gggaagatgg cggatgaatg agacaggcgg cgccgcaaga ggcgccgcgt
+       61 ttcagcacta tatcatttgc taccatgcac aacagcgatc gttccatgaa tcacgataca
+      121 tgatgttccc ttctgtgtat atccaggtga tcgtctcata acggaaatca atgtcttcaa
+      181 ggtgagtact tgtcattccg gccggatgtg aatttggtgt gattgccgta atcttaatat
+      241 tcgccatcgc tatgttaaaa tattcaactt ccagtcccgc ctcatttatt ctgtacattt
+      301 ttagcgttgc cgatcttaat gttcgacctt cacaaagagc cctaaataac aaaggtgttg
+      361 ttctgtcaaa ctctttttga attttaaccg gtgtatgaag acgggttccc gtcagctttc
+      421 ctgtattatt atcggtaggt aaccaaacat gatgattcac tgcgcgcaat tcgatggaac
+      481 ccgtgcgtgt gggcatcagg caagaaccta taataggcga attattctca tcagttaacc
+      541 ataaatatgc tggatttgac attacccctc ctctttcata tcagttttta actttaaacc
+      601 aaacgacaac gtgaaaccca atgattaata aaacaaaaag tcctattaag ttaatggcaa
+      661 tgtcaggaaa aagagagact gcaatcatgc taaatataat gattaataat acaatatccc
+      721 atccccataa aaaaagaatg aattcttcct tttaaccatc ttttcaagaa atccatccat
+      781 tcacctcatt aatttaataa gtaattcagc aagttcatca tcagaaataa tcatcggatt
+      841 taaataagga acgcctgtga tgacaggttc gatgagaaag tacatcatct ccagatggtt
+      901 agcgtataac gcattgtaat aaaatgaatt atgcattttc aaattgtcag cgctattagc
+      961 ggcatcctga atcaatccat acacgtttaa taccactgcg gtagcagtta cactcccttt
+     1021 aaggactaat gaccttgccc tgttgatacg cccatataca acagtattaa acctggaagt
+     1081 ctggcaaatc atggttgcta ctgccattat taaaatacga ttagttaatc ctgaagatga
+     1141 tatgtaaact cccgcgccga caagcttctt gagaatatat tgagcttttt cttctttttt
+     1201 attttgaaag taggtttcta tatatatttt aatcatttgg aaaatgatat cacgactttt
+     1261 aactaactgc gccagccctg caataaatct tgtgtcctct tgctttaact tagaacaaac
+     1321 accctgataa ttatccatta agcaggaagt ataatacgaa gcacgggtta taccatttcc
+     1381 catttgattc agtgtatcaa taacattctt ttttactcca gcaaatgctt catcaaattt
+     1441 tatggccaga atacgctccg cctcgattga ggtaatgatg aaattcctat aatacataat
+     1501 tagatccttc ctttattaga tcattcattg ttccggcaca tatttctcat gatcatctgg
+     1561 cctttcaata tacttataaa acgatggcct tgatagtaat attgactcta ctcttttgtt
+     1621 tatattccct cgccccctgc ccggtttaaa atatctcggt tagctattac ttcgtattgt
+     1681 ttcatatttt cgctggaaaa ccgcgcagcc gggcgcagaa acagggactc tatcgtcggc
+     1741 tctgcgcgcg gttagacgat gagatggcgg tcagcctgca ggacgtgatg gtggttatcc
+     1801 agttttacca actggaggac tggaa
+//

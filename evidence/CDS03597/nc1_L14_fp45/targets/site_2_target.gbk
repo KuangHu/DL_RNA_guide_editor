@@ -1,0 +1,27 @@
+LOCUS       kpneu_E001787_tg         409 bp    DNA              UNK 01-JAN-1980
+DEFINITION  CDS03597 pre-insertion target (empty) locus.
+ACCESSION   kpneu.E001787
+VERSION     kpneu.E001787
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+COMMENT     bag_id: CDS03597
+            db_id: kpneu.E001787
+            locus_id: deep_kpneu/GCA_009909325.1_k12|GCA_009909325.1_k12.B000023
+            pre_event_genome:
+            pre_event_contig:
+            carriers_empty: GCA_015286445.1
+FEATURES             Location/Qualifiers
+     misc_feature    203
+                     /note="insertion_point_offset=202 (pre-insertion target;
+                     element would insert here)"
+ORIGIN
+        1 ggcgcctctt gcggcgccgc ctgtctcatt catccgccat cttccctggg ctaaaactcc
+       61 agtcctccag ttggttaaac tggataacca ccatcacgtc ctgcgggctg accgccatct
+      121 catcgtctaa ccgcgcgcag agccgacgat agagtccctg tttctgcgcc cggctgcgcg
+      181 gttttccagc gaaaatatga aacagcacga agcgggcgct gcgtccttcg ctgaggtagt
+      241 gcgggtcgta aatgcgctgc tcatcggcgg cccgttcgat aaactgaaat ctgtctgctg
+      301 acggaacgtc gaactccgcc accagacact catgaaagag cgccgacaat tgagcaaact
+      361 ccgcgggatg ccaggcggtg ccaagcgaaa ttcgggtcag gggcatgac
+//

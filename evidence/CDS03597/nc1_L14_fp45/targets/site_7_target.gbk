@@ -1,0 +1,27 @@
+LOCUS       kpneu_E002471_tg         400 bp    DNA              UNK 01-JAN-1980
+DEFINITION  CDS03597 pre-insertion target (empty) locus.
+ACCESSION   kpneu.E002471
+VERSION     kpneu.E002471
+KEYWORDS    .
+SOURCE      .
+  ORGANISM  .
+            .
+COMMENT     bag_id: CDS03597
+            db_id: kpneu.E002471
+            locus_id: full_kpneu/GCA_023703975.1_k24|GCA_023703975.1_k24.B000018
+            pre_event_genome:
+            pre_event_contig:
+            carriers_empty: GCA_022354725.1
+FEATURES             Location/Qualifiers
+     misc_feature    140
+                     /note="insertion_point_offset=139 (pre-insertion target;
+                     element would insert here)"
+ORIGIN
+        1 ttttcgccgg aaaaccgcgc agccgggcgc agaaacaggg actctatcgt cggctctgcg
+       61 agcggttaga cgatgagatg gcggtcagcc cgcaggacgt gatggtggtt atccagttta
+      121 accaactgga ggactggagt tttagcgcag ggaagatggc gggtgaatga gacaggcggc
+      181 gccgcaagag gcgccgcgtt tcagatgata taatttacta ccacgcgaga tgatgcacca
+      241 gcgagagatc ccaggccgtt gccaatagcg aaagaaacat aatcacattg accactgttt
+      301 caagacgttt ttccatcgtt acttctcctg agcctgtttc ccctgttata gcgggaaaag
+      361 cttaacaacc tcttaccgct tcaggactca agcgtgatcc
+//

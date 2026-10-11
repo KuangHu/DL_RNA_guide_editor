@@ -1,0 +1,9 @@
+bag_idx	db_id	is_support	locus_id	inserted_len	insert_md5	target_len	insertion_point_offset	n_carriers_derived	n_carriers_empty	decomposition_method
+0	kpneu.E002228	True	deep_kpneu/GCA_012964645.1_k12|GCA_012964645.1_k12.B000025	1824	9c1206b13ceb	405	220	6	3	exact
+1	kpneu.E001788	False	deep_kpneu/GCA_002163895.1_k12|GCA_002163895.1_k12.B000032	1824	fa06196cdf58	408	204	2	1	exact
+2	kpneu.E001787	False	deep_kpneu/GCA_009909325.1_k12|GCA_009909325.1_k12.B000023	1824	4f262155d4a2	409	202	8	1	exact
+3	kpneu.E002229	False	deep_kpneu/GCA_012963525.1_k12|GCA_012963525.1_k12.B000011	1824	698cb613dce1	405	315	8	1	exact
+4	kpneu.E001816	True	deep_kpneu/GCA_002852325.2_k12|GCA_002852325.2_k12.B000016	1824	d6f3ec8d19b6	400	97	10	1	tolerant_alignment
+5	kpneu.E002331	False	deep_kpneu/GCA_015284665.1_k12|GCA_015284665.1_k12.B000045	1824	482436c0028d	407	217	8	1	exact
+6	kpneu.E002303	True	deep_kpneu/GCA_018394355.1_k12|GCA_018394355.1_k12.B000001	1824	d91b3b7b852d	408	249	10	1	exact
+7	kpneu.E002471	True	full_kpneu/GCA_023703975.1_k24|GCA_023703975.1_k24.B000018	1825	d77c7842e396	400	139	1	1	tolerant_alignment

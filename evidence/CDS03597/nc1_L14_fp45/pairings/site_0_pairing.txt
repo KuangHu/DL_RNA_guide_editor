@@ -1,0 +1,13 @@
+# site 0  db_id=kpneu.E002228  bag=CDS03597
+# nc[0:55] aligned to revcomp(flank[5:99])
+# central L-mer (guide-target core): nc_pos=1 L=14
+# core match: 14/14  left_extension: 0  right_extension: 38  total contiguous match through core: 52
+
+nc  5'->3':   ---------------------------------------ATCGTCTAACCGCGCGCAGAGCCGACGATAGAGTCCCTGTTTCTGCGCCCGGCTG
+              ........................................||||||||||||||||||||||||||||||||||||||||||||||||||||.|
+RC(flank):    GATAACCACCATCACGTCCTGCGGGCTGACCGCCATCTCGTCGTCTAACCGCGCGCAGAGCCGACGATAGAGTCCCTGTTTCTGCGCCCGGCAG
+                                                      ^^^^^^^^^^^^^^                                        
+
+guide    = nc[1:15]  = TCGTCTAACCGCGC
+target   = flank[45:59] = GCGCGGTTAGACGA
+RC(tgt)  = TCGTCTAACCGCGC

@@ -1,0 +1,40 @@
+>site0_target  support=True  flank_len=120  slice=[0:120]  target_rel_pos=45
+--------------------------ccgcgctgccgggcgcagaaacagggactctat-
+---------------------------------cgtcggctctgcgcgcggttagacgac
+gagatggcggtcagcccgcaggacgtgatggtggttatccagtttaaccaactggaggac
+---------------
+>site1_target  support=False  flank_len=120  slice=[0:120]  target_rel_pos=45
+gcgcagggaagatggcggatg----aatgagacaggcggcgccgcaagaggcgccgcgt-
+---------------------------------ttcagatgatataatgtactaccacgc
+gagatgatgc---accagcgagagat--------------------------cccaggcc
+--------gttgcca
+>site2_target  support=False  flank_len=120  slice=[0:120]  target_rel_pos=45
+--------------------------------------ccgacgatagagtccctgttt-
+---------------------------------ctgcgcccggctgcgcggttttccagc
+gaaaatatga---aacagcacgaagcgggcgctgcgtccttcgctgaggtagtgcgggtc
+gtaaatgcgctgctc
+>site3_target  support=False  flank_len=120  slice=[0:120]  target_rel_pos=45
+gcgcagggaagatggcggatg----aatgagacaggcggcgccgcaagaggcgccgcgt-
+---------------------------------ttcagatgatataatttactaccaggc
+gagatgatgc---accagcgagagat--------------------------cccaggcc
+--------gttgcca
+>site4_target  support=True  flank_len=120  slice=[0:120]  target_rel_pos=45
+------------------------------------------------------------
+---------------atcttccctgcgctaaaactccagtcctccagttggttaaactgg
+ataaccaccatcacgtcctgcgggctgaccgccatctcatcgtctaaccgctcgcagagc
+cgacgatagagtccc
+>site5_target  support=False  flank_len=120  slice=[0:120]  target_rel_pos=45
+-------------------------catctgaaacgcggcgcctcttgcggcgccgcctg
+tctcattcatccgccatcttccctgcgctaaaactccagtcctccagttggttaaactgg
+ataaccaccatcacgtcctgcgggc-----------------------------------
+---------------
+>site6_target  support=True  flank_len=120  slice=[0:120]  target_rel_pos=45
+g----------gtagtaaattatatcatctgaaacgcggcgcctcttgcggcgccgcctg
+tctcattcacccgccatcttccctgcgctaaaactccagtcctccagttggttaaactgg
+ataaccacca--------------------------------------------------
+---------------
+>site7_target  support=True  flank_len=120  slice=[0:120]  target_rel_pos=45
+---------------------------------acgcggcgcctcttgcggcgccgcctg
+tctcattcacccgccatcttccctgcgctaaaactccagtcctccagttggttaaactgg
+ataaccaccatcacgtcctgcgggctgaccgcc---------------------------
+---------------

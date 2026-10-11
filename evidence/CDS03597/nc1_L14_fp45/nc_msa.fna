@@ -1,0 +1,56 @@
+>site0_nc  support=True  nc_len=311  slice=[0:115]  guide_rel_pos=1
+------------------------------------------------------------
+-------------atcgtctaaccgcgcgcagagccgacgat------------------
+----------agagtccctgtttctgcgcccggctgcgcggttttccagcgaaaa-----
+---------tatgaaacaatacgaagtaatagctaaccgagatattttaa----------
+------------------------------------------------------------
+-------------
+>site1_nc  support=False  nc_len=250  slice=[0:115]  guide_rel_pos=1
+------------------------------------------------------------
+------------------------------------------------------------
+-----------------------------------------------------aattaga
+tccttcctttattagatcattcattgttccggc------acatatttctta-tgttcatc
+tggcctttcaatatacttataaaacgatggccttgatagtaatattgactctact-----
+-------------
+>site2_nc  support=False  nc_len=243  slice=[0:115]  guide_rel_pos=1
+------------------------------------------------------------
+------------------------------------------------------------
+------------------------------------------------------------
+----------------taatacgaagtaatagctaaccgagatattttaagccgggcagg
+gggcgagggaatata--aacaaaagagtagagtcaatattactatcaaggccatcgtttt
+ataagtatattga
+>site3_nc  support=False  nc_len=250  slice=[0:115]  guide_rel_pos=1
+------------------------------------------------------------
+------------------------------------------------------------
+-----------------------------------------------------aattaga
+tccttcctttattagatcattcattgttccggc------acatatttctta-tgatcatc
+tggcctttcaatatacttataaaacgatggccttgatagtaatattgactctact-----
+-------------
+>site4_nc  support=True  nc_len=384  slice=[0:115]  guide_rel_pos=1
+---cgtgatggtggttatccagtttaaccaactggaggactggagtttta----------
+--------------------------gcgcagggaagatggcggatgaatgagacaggcg
+gcgccgcaagaggcgccgcgtttcagcactatat--------------------------
+------------------------------------------------------------
+------------------------------------------------------------
+-------------
+>site5_nc  support=False  nc_len=334  slice=[0:115]  guide_rel_pos=1
+ggctaaaactccagtcctccagttggttaaactggataaccaccatcacgtcctgcgggc
+tgaccgccatctcatcgtctaaccgcgcgcagagccgacgat------------------
+----------agagtccctgttt-------------------------------------
+------------------------------------------------------------
+------------------------------------------------------------
+-------------
+>site6_nc  support=True  nc_len=319  slice=[0:115]  guide_rel_pos=1
+------------------------------------------------------------
+--------------------------------------------atgaatgagacaggcg
+gcgccgcaagaggcgccgcgtttcagcactatatcatttgnnnnnnnnnnnnnaattaga
+tccttcctttattagatcattcattgttccggc------acatat---------------
+------------------------------------------------------------
+-------------
+>site7_nc  support=True  nc_len=310  slice=[0:115]  guide_rel_pos=1
+---------------------------------------------tttta----------
+--------------------------gcgcagggaagatggcggatgaatgagacaggcg
+gcgccgcaagaggcgccgcgtttcagcactatatcatttgnnnnnnnnnnnnntacccct
+cctctttcatatcagt--------------------------------------------
+------------------------------------------------------------
+-------------

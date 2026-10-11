@@ -450,18 +450,55 @@ Under the reviewer's three-state framework:
   the raw-index clustering coincidentally groups them; not an RNA-guided
   target-recognition signal."
 
-**What is NOT yet determined:**
-- Whether the per-insertion RC pairing represents a TIR / element
-  boundary feature (would require element-coord-anchored analysis of
-  each inserted element's boundaries vs the target locus junction).
-- Whether a corrected scaffold-coord clustering (not raw nc_pos) would
-  surface a different real guide-target pairing in sites 4/6/7.
+**Extended-pairing analysis — the RC complementarity extends 40–55 bp
+through the 14-mer core (added 2026-10-11)**
 
-Deliverables in `logs/cds03597_align/`:
-- `nc_context.fna` — ±100 nt nc extracts for the 4 supporting sites
-- `nc_msa.fna` — MAFFT MSA of the above
-- `target_context.fna` — ±100 nt target extracts
-- `target_msa.fna` — MAFFT MSA of the above
+Running the per-site nc vs RC(flank) alignment on ±40 nt around the
+cluster (centered on the 14-mer core), with aligned display and
+per-site extension counts:
+
+| site | core match | left ext | right ext | **total contiguous match** |
+|---:|---:|---:|---:|---:|
+| 0 | 14/14 | 0 | 38 | **52 bp** |
+| 4 | 14/14 | 1 | 40 | **55 bp** |
+| 6 | 14/14 | 0 | 27 | **41 bp** |
+| 7 | 14/14 | 1 | 8 | 23 bp (plus more at offset) |
+
+For sites 0, 4, 6 the RC pairing is a **40–55 bp contiguous
+Watson–Crick stretch**, not a 14-mer. Real RNA-guided target
+recognition uses ~20-nt guides (sgRNA / crRNA) or 32–40 nt in TnpB.
+**A 50+ bp fully-paired stretch is not an RNA guide — it is DNA
+sequence that happens to appear on both strands of the extracted
+window.** This is the signature of a transposon with large terminal
+inverted repeats (TIRs), not an RNA-guided system.
+
+**Updated CDS03597 verdict (reviewer-accepted language):**
+"Mobile-element family with large terminal inverted repeats; the v3
+signal reflects TIR structure, not RNA-guided target recognition."
+Status (3) — artifact of a structural / TIR class rather than
+RG-discovery.
+
+### Evidence folder (checked in, 2026-10-11)
+
+Per-candidate evidence package built by
+`scripts/build_candidate_evidence_folder.py`:
+
+`evidence/CDS03597/nc1_L14_fp45/` on `main` — fully browseable on GitHub:
+```
+README.md                   — summary + reading guide
+cluster.tsv                 — cluster metadata
+provenance.tsv              — all 8 sites' db_id, locus, md5, carriers
+nc_context.fna / nc_msa.fna — ±100 nt nc + MAFFT MSA
+target_context.fna / target_msa.fna — ±100 nt target + MAFFT MSA
+inserts/site_<i>_insert.{fna,gbk}   — 1824 bp inserted element (annotated)
+targets/site_<i>_target.{fna,gbk}   — 400 bp pre-insertion target (annotated)
+pairings/site_<i>_pairing.txt       — nc vs RC(flank) aligned with extension counts
+```
+
+GBK files are loadable in Artemis / SnapGene / Benchling. Open the
+pairings/*.txt to see the full-length Watson–Crick complementarity
+through the 14-mer core and judge for yourself whether it is a guide
+or a TIR.
 
 ### Status propagated to the other candidates
 
