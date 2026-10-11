@@ -214,9 +214,13 @@ def main():
     cfg = PipelineConfig()
     all_cand_rows: list[dict] = []
     all_rej_rows:  list[dict] = []
+    # Cache per-bag passing clusters so the Phase-7 merging pass does NOT
+    # re-run the pipeline (was 2x runtime inefficiency in the first draft).
+    bag_passing: dict[str, list] = {}
     t0 = time.time()
     for idx, (bag_id, sites) in enumerate(sorted(bags.items()), 1):
         result = run_bag(bag_id, sites, cfg)
+        bag_passing[bag_id] = result.passing
         # candidates: all passing + all failing Phase D, kept with pass flag
         all_clusters = result.passing + result.failing
         for cid, (cluster, bg_report) in enumerate(all_clusters, 1):
@@ -283,16 +287,15 @@ def main():
 
     # ---------- step 7: cross-L / cross-nc_pos merging ----------
     # Merge only clusters that passed Phase D (publication-worthy).  The
-    # un-merged file above remains for audit.
+    # un-merged file above remains for audit.  Uses cached per-bag passing
+    # clusters from the first pass (no redundant pipeline execution).
     merge_cfg = MergeConfig()
     merged_rows_out: list[dict] = []
     for bag_id, sites in sorted(bags.items()):
-        # recollect this bag's Phase-D-passing clusters by replaying run_bag
-        # (cheap: one pass per bag), then run merger
-        result = run_bag(bag_id, sites, cfg)
-        if not result.passing:
+        passing = bag_passing.get(bag_id, [])
+        if not passing:
             continue
-        merged = merge_clusters(result.passing, merge_cfg)
+        merged = merge_clusters(passing, merge_cfg)
         for rank_in_bag, m in enumerate(merged, 1):
             rep_cluster, rep_bg = m.representative
             # synthesize a row from the representative, add merge columns
