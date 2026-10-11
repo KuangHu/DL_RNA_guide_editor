@@ -41,6 +41,38 @@ available, derive nc regions from each actual copy and only then revisit
 indel-aware boundaries. Existing Hamming-only deletion results are not
 promoted as indel-resolved evidence.
 
+### Copy-carrier evidence resolved from cluster (2026-10-11)
+
+`scripts/resolve_copy_carriers.py` resolves the inventory from
+`/global/scratch/users/kh36969/fna_ins_discovery/copysites/` (the on-cluster
+`160_copy_site_extract.py` output). Results in
+`evidence/_step2/copy_carrier_resolved/`:
+
+- Coords: 4,128 / 4,128 resolved from `copysites/*_sites.tsv` and
+  `copysites/shards/*.s##_sites.tsv`. `insert_md5` identity (carrier
+  copysites row vs source event inherited) holds for 4,128 / 4,128.
+- Carrier contig slices (`[elem_start - 200, elem_end + 200]`, forward
+  strand): 2,816 / 4,128 extracted. The 1,312 misses are all ecoli, which
+  this cluster does not carry assembly FASTAs for (same gap Step 1 flagged
+  as `seed_genome_missing`).
+- Nothing is substituted from the source event. For the 1,312 ecoli copies
+  the slice stays blank and the row stays flagged
+  `copy_requires_carrier_fasta_download`.
+- Spot check: slices with `pct_ident == 1.0 ∧ elem_len == inherited_len`
+  reproduce the source `insert_md5` in 176/177 cases (99.4%); the 2,639
+  slices with `pct_ident < 1.0` or differing length do not reproduce the
+  source hash on purpose — they hold divergent carrier copies, which is
+  exactly the signal the quarantine was designed to preserve.
+- Spneumoniae (129 rows) resolves only against legacy 14-col variants
+  (`spneumoniae_sites.tsv`, `spneu_v3_sites.tsv`, `spneu_v4_sites.tsv`)
+  which lack `flank_fwd`, `orient`, and `elem_len`; those columns are
+  empty for those rows.
+
+See `evidence/_step2/copy_carrier_resolved/README.md` for the full column
+list and the builder-integration note (the builder currently raises
+`copy_requires_actual_carrier_alleles_and_nc` for all `.copyNNNN`; the
+README describes the shim needed to consume this bundle).
+
 Evaluate match strength, motif complexity, scaffold-column and target-position
 consistency, background diversity, local alignment extensions, and duplicated
 sequence/context evidence as a feature vector. Report per-family evidence
