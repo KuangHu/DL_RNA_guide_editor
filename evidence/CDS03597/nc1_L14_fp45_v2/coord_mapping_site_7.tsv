@@ -1,0 +1,10 @@
+# nc fragments and flank → occupied allele projection
+# site=7 chosen_b=139 inserted_len=1825
+# nc concat uses N*13 spacer between fragments
+category	frag_idx	offset_in_frag	concat_pos	projected_occupied_pos	source_strand_assumption	note
+nc_frag_0	0	anchor[0:20]	concat_start=0	139	forward_strand (empirical)	n_hits_in_occupied=2; frag_len=79
+nc_frag_1	1	anchor[0:20]	concat_start=92	701	forward_strand (empirical)	n_hits_in_occupied=1; frag_len=218
+flank_fwd	-	anchor[0:20]	fp_start=0	-1	forward_strand (empirical)	n_fwd_hits=0; n_rc_hits=2; flank_len=120
+flank_rc	-	anchor[0:20]	fp_start=0	179	reverse_strand (empirical)	n_fwd_hits=0; n_rc_hits=2; flank_len=120
+hit_target	-	flank[45:59]	-	[]	orient=rc	core_b_pos (if direct)
+guide_core	-	nc[1:15]	1	[140, 1965]	forward_strand (empirical)	core_a positions

@@ -607,18 +607,44 @@ Cross-site: `summary.tsv`, `inserts_pairwise.blast`,
    `boundary_overlap.tsv` for the full table.
 
 **Impact on the v3 Phase C signal — four cores are NOT all boundary
-artefact (reviewer-asserted):** per the reviewer's inspection of the
-actual N best boundary picks, under ALL optimal boundary choices
-sites 0 and 6 preserve the inside-vs-outside assignment of the two
-14-mer cores — the first core always sits inside the insert, the
-second core always outside. For sites 4 and 7 the two cores'
-inside/outside assignment changes with boundary choice. Sites 0 and
-6 therefore provide genuine same-direction repeat evidence that is
-independent of the decomposition pick; sites 4 and 7 are
-boundary-sensitive. (This claim is not yet reproduced in
-`boundary_stability.py`, which only shows the symmetric
-`junction_ambiguity_bp` window; replicating it needs the actual list
-of N best boundary positions — step-1 of the next-step order.)
+artefact (verified by `boundary_stability_v2.py`):** replacing the
+symmetric j_amb window with the ACTUAL N best boundary positions
+(derived by sliding the boundary and keeping either exact matches of
+occupied[0:b] + occupied[b+inserted_len:] == empty, or the
+min-mismatch set for tolerant_alignment), the N is 131, 108, 155,
+66 per site — matches `loci.tsv.n_equivalent_decompositions` exactly.
+Full-interval motif check [core_pos, core_pos + L) classified as
+INSIDE / OUTSIDE / CROSSES at EVERY valid b:
+
+| site | n_valid | core_a INSIDE/OUT/CROSS | core_b INSIDE/OUT/CROSS |
+|---:|---:|:---:|:---:|
+| 0 | 131 | **131/0/0** (always INSIDE) | **0/131/0** (always OUTSIDE) |
+| 4 | 108 | 2/93/13  (flips) | 93/2/13 (flips) |
+| 6 | 155 | **155/0/0** (always INSIDE) | **0/155/0** (always OUTSIDE) |
+| 7 |  66 | 2/51/13  (flips) | 51/2/13 (flips) |
+
+Sites 0 and 6 — the exact-method sites — provide boundary-stable
+direct-repeat evidence. Sites 4 and 7 — the tolerant_alignment
+sites — flip. The exact sites pick the RIGHTMOST valid boundary
+(220, 249); the tolerant sites pick the LEFTMOST (97, 139). Both
+conventions place core_a 1 bp inside and core_b 1 bp outside at the
+chosen boundary, which is the knife-edge for sites 4/7 but the
+stable interior for sites 0/6 because their valid range extends away
+from the core.
+
+**Coord-mapping findings (`coord_mapping_site_<i>.tsv`):** for all 4
+sites, `nc_frag_0` anchor maps to **exactly** `chosen_b` in the
+occupied allele. The extracted nc has 2 fragments: `nc_frag_0`
+starts at the insert's 5′ boundary (relative to the pipeline's
+convention), `nc_frag_1` sits 562–1680 bp downstream deep inside
+the mobile element. The flank is extracted on the REVERSE strand of
+the occupied allele (flank_fwd 0 hits, flank_rc 1–2 hits) — which is
+why `guide_core` and the forward-strand image of `revcomp(target)`
+are the same 14-mer and both land on the forward strand as the two
+direct-repeat copies at `[chosen_b + 1, chosen_b + inserted_len + 1]`.
+The `insert_start + nc_pos` shortcut used in v1/boundary_stability
+only works for `nc_frag_0`; nc_frag_1 and any reverse-strand hit
+require the full coord_mapping table.
 
 Also: the "continuous repeat length" measured in the OCCUPIED allele
 frame is **52, 107, 41, 65 bp** for sites 0, 4, 6, 7 respectively
