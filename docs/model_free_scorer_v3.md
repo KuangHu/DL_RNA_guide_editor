@@ -1,3 +1,67 @@
+# Current evaluation objective: family separation (2026-10-11)
+
+User-specified objective: continuous sequence-evidence features that distinguish
+group II introns, IS110, and IS200/IS605 from IS1/IS3/IS5 reference families.
+Binary publication thresholds are not required for this work. The small number
+of fully resolved bags limits family comparisons, but it is not a reason to
+wait for a binary threshold calibration before doing diagnostic evaluation.
+
+The scope includes RNA- AND DNA-mediated target recognition. Preserve separate
+element-family and protein-role annotations: IS200/IS605 TnpA/Y1 and TnpB are
+different strata. TnpA subterminal DNA-mediated recognition must not be
+mislabelled as a nonguided negative merely because it is not RNA-guided.
+Historical RNA-guidance-specific retractions below retain their original scope.
+
+Next work remains: actual copy-carrier occupied sequences / coordinates / nc,
+then indel-aware boundary evidence. Family annotation should cover all evaluated
+bags independently of score ranking, not only top-scoring proteins. Ambiguous
+family assignments and co-encoded protein roles remain explicit. Annotation is
+for evaluation and must not become an input feature used to score a bag.
+
+## Copy-carrier evidence inventory (2026-10-11)
+
+Ran `scripts/export_copy_carrier_requests.py` on the exact 1173-bag cohort and
+the HF-pinned raw site table. The cohort has 8,697 selected sites, including
+4,128 `.copyNNNN` rows across 3,399 named carrier assemblies. The HF package
+does not contain copy-specific contig/start/end coordinates or carrier
+occupied sequence. The v5 copy rows only preserve a 120-bp excision-derived
+flank; their noncoding regions and hash are inherited from the source event.
+Accordingly, all 4,128 copy rows remain unknown for actual occupied sequence,
+coordinate, and copy-specific nc evidence. No parent-event sequence is
+substituted.
+
+The reproducible request inventory is written to
+`output/copy_carrier_requests/copy_carrier_requests.tsv`, with the distinct
+assembly counts in `carrier_assembly_counts.tsv` and totals in `summary.json`.
+To resolve these rows, the next input must provide either the upstream
+`160_copy_site_extract.py` per-copy `*_sites.tsv` output plus carrier-local
+occupied sequence, or an equivalent carrier-contig interval export containing
+the copy sequence and its exact coordinates. After those sequences are
+available, derive nc regions from each actual copy and only then revisit
+indel-aware boundaries. Existing Hamming-only deletion results are not
+promoted as indel-resolved evidence.
+
+Evaluate match strength, motif complexity, scaffold-column and target-position
+consistency, background diversity, local alignment extensions, and duplicated
+sequence/context evidence as a feature vector. Report per-family evidence
+coverage alongside score distributions, ECDFs and pairwise rank comparisons.
+Use null/background normalization to compare search lengths and site counts;
+it need not produce a binary cutoff. Incomplete evidence is not assigned a
+negative score. Comparisons must account for nc length, K, background groups
+and evidence coverage, with homologous elements grouped during resampling.
+
+The current 9--14 bp, single-window search is not a neutral architecture across
+these families. Short DNA guide segments and separated RNA recognition segments
+need explicit evaluation; terminal location alone must not count as an artefact.
+Changing candidate architecture requires a new method version and fresh
+background comparisons, rather than tuning thresholds using family labels.
+
+Primary mechanism references:
+- IS200/IS605 TnpA DNA recognition: https://pmc.ncbi.nlm.nih.gov/articles/PMC2680152/
+- IS110 bridge RNA: https://www.nature.com/articles/s41586-024-07552-4
+- TnpB RNA-guided cleavage: https://www.nature.com/articles/s41586-021-04058-1
+- Group II intron RNA--DNA pairing: https://pmc.ncbi.nlm.nih.gov/articles/PMC8643678/
+
 # Step 2 corpus evidence builder (implemented, 2026-10-11)
 
 `scripts/build_v3_corpus_evidence.py` now generates sequence-bound evidence

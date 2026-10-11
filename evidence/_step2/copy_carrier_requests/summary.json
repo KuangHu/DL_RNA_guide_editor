@@ -1,0 +1,10 @@
+{
+  "selected_bags": 1173,
+  "selected_sites": 8697,
+  "copy_sites": 4128,
+  "unique_carrier_assemblies": 3399,
+  "copy_rows_with_coordinates": 0,
+  "copy_rows_with_actual_carrier_occupied_sequence": 0,
+  "copy_rows_with_actual_copy_nc": 0,
+  "unknown_status": "No copy-site coordinate table or carrier genome FASTA is present in the pinned HF provenance package. Parent/source-event sequence is not substituted."
+}
