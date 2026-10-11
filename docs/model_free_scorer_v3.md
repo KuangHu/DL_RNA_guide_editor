@@ -1,6 +1,158 @@
 # Model-free scorer v3 — spec and progress log
 
-Date: 2026-10-10
+Date: 2026-10-10 (updated 2026-10-11)
+
+## Retractions (2026-10-11)
+
+Four claims in earlier revisions of this doc are retracted. Reader should
+ignore them wherever they appear below until the sections are rewritten
+in a follow-up pass.
+
+### R1 — "0.89 publication threshold strictly controls null pass-rate ≤ 1 %"
+
+Not supported by the calibration code. `scripts/calibrate_v3_nulls.py`
+(line 117) records the mean_m of each bag's **max-support cluster**;
+the publication filter in `scripts/run_v3_scorer.py` accepts
+**any** cluster whose mean_m ≥ threshold. These are different
+statistics. A bag with cluster A (support=8, mean_m=0.80) and cluster
+B (support=4, mean_m=1.00) is recorded as 0.80 in the calibration
+but passes the filter via cluster B at 0.89. The reported
+"null frac_pass = 0.0 %" is therefore an undercount of the actual
+null pass-rate under the deployed filter rule.
+
+Calibrator and reporter must share a single bag-decision function.
+500-bag Phase G must be re-run after fixing BOTH the metric and the
+upstream clustering before any claim about `min_max_mean_m` is
+honored.
+
+### R2 — "Y1_Tnp hit = positive-control recovery of IS200/IS605 RNA-guided"
+
+Family-level error. Y1_Tnp (Pfam PF01797) is a **HUH / single-tyrosine
+transposase** (TnpA-like) — not the RNA-guided nuclease. In IS200/605
+the RNA-guided protein is **TnpB** (Pfam `OrfB_IS605`,
+`HTH_OrfB_IS605`, `Cas12f1-like_TNB`, `Transposase_28/31`). A Y1_Tnp
+hit identifies a transposase of a family that *contains* an RNA-guided
+nuclease elsewhere in its loci; it is not itself the RG protein and
+does not validate v3's RG discovery.
+
+(Note: an earlier retraction draft miscalled Y1_Tnp a serine
+recombinase. Y1_Tnp is HUH / single-tyrosine, not serine. HUH and
+serine are distinct transposase folds.)
+
+### R3 — Actual TnpB-family recovery is 0 of 10 at 0.89
+
+`all_candidates/manifest.tsv` contains **10 bags** whose dominant ORF
+Pfam at E ≤ 1e-5 is a TnpB-family hit (`OrfB_IS605`,
+`HTH_OrfB_IS605`, `Cas12f1-like_TNB`, individually or in
+combination):
+
+| CID | strict Pfam | n_pass_D | n_pub_thr | best mean_m | bg | sup |
+|---|---|---:|---:|---:|---:|---:|
+| CDS03228 | Cas12f1-like_TNB, HTH_OrfB_IS605, OrfB_IS605 | 34 | 0 | 0.733 | 3 | 5 |
+| CDS02499 | OrfB_IS605, Cas12f1-like_TNB | 94 | 0 | 0.725 | 3 | 4 |
+| CDS03385 | OrfB_IS605, Cas12f1-like_TNB | 82 | 0 | 0.750 | 4 | 4 |
+| CDS03362 | Cas12f1-like_TNB | 70 | 0 | 0.733 | 3 | 5 |
+| CDS03474 | HTH_OrfB_IS605 | 334 | 0 | 0.833 | 4 | 4 |
+| CDS03281 | OrfB_IS605, Cas12f1-like_TNB | 23 | 0 | 0.682 | 4 | 4 |
+| CDS02404 | OrfB_IS605, Cas12f1-like_TNB | 111 | 0 | 0.727 | 4 | 4 |
+| CDS02902 | OrfB_IS605, Cas12f1-like_TNB | 568 | 0 | 0.750 | 4 | 4 |
+| CDS03319 | OrfB_IS605, Cas12f1-like_TNB | 55 | 0 | 0.722 | 4 | 4 |
+| CDS03026 | OrfB_IS605, Cas12f1-like_TNB | 206 | 0 | 0.727 | 4 | 4 |
+
+**0 of 10 TnpB bags cross the 0.89 bar.** Every TnpB bag produces
+strong cross-site evidence (23–568 Phase-D-passing clusters, 3–4
+local bg groups, 4–5 supporting sites) but at mean_m 0.68–0.83 —
+consistent with TnpB's wobble-tolerant guide biology but below the
+calibrated null bar. The strict threshold excludes the biological
+positive control it was supposed to validate.
+
+Equivalent-threshold IS110 recovery is also mostly misses — 2 of 28 pass.
+Previous attribution of the 26 IS110 misses to "wobble" was presented
+too strongly; per-case failure analysis (coord sanity, max per-site m,
+flank-position spread, Phase B rejection reasons) is pending before
+any attribution.
+
+### R4 — "CDS03597 validated as novel RNA-guided"
+
+Overclaim. CDS03597 has: strong cross-site mean_m=1.000 target
+coherence, 4 local bg groups, 4/8 sites supporting, dominant ORF
+239 aa, strict Pfam = none, sensitive hmmscan hits `DUF1672`
+(E=3e-3, 17.6 bits — weak, uncharacterized) and `DUF6803`
+(E=5e-3, 17.7 bits — weak, uncharacterized). Correct description:
+"strong cross-site target-recognition signal; no reliable functional
+assignment at either strict or sensitive Pfam." That is consistent
+with — but does not establish — a novel RG system.
+
+Separately, the "novel" tag applied by `annotate_v3_top_hits.py`
+to any bag with no significant Pfam hit (strict and sensitive) is
+rephrased as "no reliable Pfam annotation". A biology claim of
+"novel RNA-guided system" requires more than Pfam-blindness.
+
+## Discovery pipeline is not model/Pfam-blind
+
+The v3 **scorer** does not use the v4/v5 model or Pfam annotation. The
+1173-bag **input** to the sweep is `all_candidates/`, which was
+filtered by `max(v4_bag_max, v5_bag_max) ≥ 1.5` AND dominant Pfam
+not in a known-non-RG set (DDE, rve/TnsB, phage_integrase, IS-support
+HTH). Any claim about "discovery" refers to v3's blind scoring **on
+top of** a model- and Pfam-filtered input set, not to a from-scratch
+Pfam-blind pipeline.
+
+## Known residual bugs (listed for the fix queue)
+
+1. **Calibration/filter statistic mismatch** (`calibrate_v3_nulls.py:117`).
+   See R1. Must be fixed before any `min_max_mean_m` threshold is
+   re-published.
+2. **Phase C window enumeration** (`cluster_enumeration.py:103`).
+   Candidate centers are observed positions only, not integer sweep;
+   no re-check that supporting-site offsets from the **median** are
+   within `max_offset`. Example `[0,0,10,10]` misses the 4-support
+   cluster at center 5; example `[0,5,10,10,10]` returns a cluster
+   with offset_from_median = −10.
+3. **`support_frac_bg_unique`** (`run_v3_scorer.py:153`). Computed as
+   `n_support / n_local_bg_groups` — numerator in sites, denominator
+   in bg groups; can exceed 1; misleadingly named. Being dropped
+   rather than renamed; a true bg-dedup fraction requires a
+   consistent assessable-background set over ALL valid sites, not
+   just supporters.
+4. **ncRNA cross-site coord assumption**. Phase C groups hits by raw
+   `nc_pos` across sites. For v5-reconstructed bags where sites' nc
+   may differ by indel or reorder, same `nc_pos` is not the same
+   physical position. Audit required before any further quantitative
+   claim.
+5. **Indel-aware bg identity**. Char-by-char `_pair_identity` can
+   miss indel-shifted clonal backgrounds. Separate from
+   `require_both_sides=True` (which only guarantees enough bp per
+   side, not that both sides differ).
+
+## Fix queue (agreed order)
+
+```
+1. Doc retractions (this section)                       — in this commit
+2. Coord + bg audit on 1173 inputs                      — upstream data
+3. Phase C fix (window + half-integer median +
+   per-site re-select-then-remove) + exhaustive
+   small-input reference tests                           — code
+4. Stat-field cleanup (drop support_frac_bg_unique;
+   keep two separate columns; defer bg-dedup frac)      — code
+5. Shared bag-decision function used by BOTH
+   calibrate_v3_nulls.py and run_v3_scorer.py            — code
+6. Regression (15 existing + 2 counterexamples +
+   exhaustive small-input test)                          — gate
+7. Freeze; calibrate (500-bag); report whatever null
+   distribution says, including "no threshold ≤ 1.0
+   meets target" as an allowed outcome                   — stats
+8. Re-run 1173 sweep; per-case IS110 (28) + TnpB (10)
+   failure analysis                                      — final
+```
+
+Everything below this line was written before the retractions and
+is NOT yet rewritten to reflect them. Specific claims about the 0.89
+threshold's strict null control, Y1_Tnp as positive-control recovery,
+and CDS03597 as "validated" are superseded by R1–R4. Section-by-section
+rewrite follows the fix queue.
+
+---
 
 ## Problem
 
