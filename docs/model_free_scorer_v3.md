@@ -128,8 +128,8 @@ Pfam-blind pipeline.
 ## Fix queue (agreed order)
 
 ```
-1. Doc retractions (this section)                       — in this commit
-2. Coord + bg audit on 1173 inputs                      — upstream data
+1. Doc retractions (this section)                       — DONE commit 350d950
+2. Coord + bg audit on 1173 inputs                      — DONE (see below)
 3. Phase C fix (window + half-integer median +
    per-site re-select-then-remove) + exhaustive
    small-input reference tests                           — code
@@ -145,6 +145,117 @@ Pfam-blind pipeline.
 8. Re-run 1173 sweep; per-case IS110 (28) + TnpB (10)
    failure analysis                                      — final
 ```
+
+## Step 2 — nc coord-comparability audit (2026-10-11)
+
+Tool: `scripts/audit_nc_coord_comparability.py`.
+Input: 1173 bags from `all_candidates/` as they appear in
+`fna_ins_discovery_v5_md_seed2/adapted.jsonl`.
+For each bag, compare every site's `inputs.noncoding_regions` to site 0:
+
+- `coord_comparable` — all sites have the SAME number of nc regions AND
+  identical per-region lengths. Phase C's assumption that raw `nc_pos`
+  is comparable across sites holds. Substitutions only.
+- `has_indel` — at least one site has different nc region length.
+  Same raw index can refer to physically different positions across sites.
+- `has_reorder` — at least one site has a different NUMBER of nc regions.
+  Raw index is not meaningful across sites at all.
+
+### Audit distribution across the 1173 sweep bags
+
+| class | n_bags | fraction |
+|---|---:|---:|
+| coord_comparable | 349 | **29.8 %** |
+| has_indel | 504 | 43.0 % |
+| has_reorder | 320 | 27.3 % |
+| **INCOMPARABLE** (indel + reorder) | **824** | **70.2 %** |
+
+### Cross-reference with v3 publication-passing bags (230 bags)
+
+| class | n_bags passing v3 pub | fraction of passers |
+|---|---:|---:|
+| coord_comparable | 89 | 38.7 % |
+| has_indel | 93 | 40.4 % |
+| has_reorder | 48 | 20.9 % |
+
+**Of the 230 reported v3 passers, only 89 are coord-comparable.**
+The other 141 (61 %) sit on an assumption that `nc_pos = X` means the
+same physical position across sites, which is not true for them. Their
+"shared cross-site motif at nc_pos X" interpretation does not hold at
+face value.
+
+### What the top-4 banked candidates and the biological positive controls look like under the audit
+
+| bag | class | n_identical_nc | n_same_lens | has_reorder | notes |
+|---|---|---:|---:|---:|---|
+| **CDS03597** (previously claimed top novel) | **has_reorder** | 1/8 | 1/8 | 1 | raw-nc_pos clustering unreliable |
+| CDS04337 | has_reorder | 1/8 | 2/8 | 1 | unreliable |
+| CDS02973 | has_reorder | 1/8 | 2/8 | 1 | unreliable |
+| CDS00113 | has_indel | 2/8 | 2/8 | 0 | unreliable |
+| **TnpB CDS03474** (highest mean_m 0.833) | **coord_comparable** | 8/8 | 8/8 | 0 | the only coord-comparable TnpB |
+| TnpB CDS03228 | has_indel | 1/8 | 1/8 | 0 | — |
+| TnpB CDS02499 | has_reorder | 1/8 | 1/8 | 1 | — |
+| TnpB CDS03385 | has_reorder | 1/8 | 1/8 | 1 | — |
+| TnpB CDS03362 | has_indel | 1/8 | 1/8 | 0 | — |
+| TnpB CDS03281 | has_reorder | 2/8 | 2/8 | 1 | — |
+| TnpB CDS02404 | has_reorder | 2/8 | 2/8 | 1 | — |
+| TnpB CDS02902 | has_indel | 4/8 | 6/8 | 0 | — |
+| TnpB CDS03319 | has_reorder | 2/8 | 2/8 | 1 | — |
+| TnpB CDS03026 | has_indel | 1/8 | 1/8 | 0 | — |
+| IS110 CDS01977 (passed v3) | has_reorder | 1/8 | 1/8 | 1 | pass sits on unreliable coord |
+| IS110 CDS07967 (passed v3) | has_reorder | 1/8 | 5/8 | 1 | pass sits on unreliable coord |
+
+### Implications
+
+- **All four top-4 banked candidates are coord-incomparable.** Their v3
+  scores are not interpretable at face value as "cross-site shared
+  motif". The strong `mean_m=1.000` seen for CDS03597 could reflect
+  coincidental motif matches at raw positions in different-structure
+  ncs, not a shared physical signal.
+- **Both IS110 passers are coord-incomparable.** The 2/28 recovery
+  number stands only in the sense that two bags cleared the (bugged)
+  publication filter; they are not demonstrably positive controls
+  under a correct coord model.
+- **9 of 10 TnpB bags are coord-incomparable.** The one that is
+  (CDS03474) has the highest mean_m (0.833) among TnpB bags. Suggestive
+  that when the coord assumption holds, TnpB bags perform better than
+  when it doesn't — but N=1 and the current filter is still bugged.
+- **Only 349 of 1173 sweep bags (29.8 %)** can be meaningfully scored
+  by the current Phase C under its own assumption. The remaining 824
+  need either a per-bag nc alignment (so a cross-site coord system
+  exists) or an alignment-free scorer that does not assume shared
+  nc_pos.
+
+### Immediate consequence for the fix queue
+
+Step 3 (Phase C fix) is not sufficient on its own. The step-3 fix
+addresses window-center and median issues within the already-flawed
+same-raw-coord assumption. The deeper fix — per-bag nc alignment or
+coord-free scoring — is a Phase A-architecture change and should be
+scoped before step 3 code lands.
+
+Options under consideration:
+
+- **Filter-only path:** restrict v3 scoring to the 349 coord-comparable
+  bags; mark the other 824 unassessable. Fast; loses recall; loses
+  biology on bags where only partial coord-comparability holds.
+- **nc-alignment preprocessing:** run a per-bag multiple alignment of
+  the K sites' nc, project all hits into alignment coords, then run
+  Phase C on the common frame. Correct; requires alignment infra; some
+  bags may have no good alignment.
+- **Alignment-free coord-independent clustering:** cluster by guide
+  sequence identity across sites instead of by nc_pos; a cluster is
+  "same k-mer appearing in flank across K sites" without requiring the
+  k-mer to be at the same nc_pos. Simpler; drops ncRNA position
+  structure.
+
+No decision in this commit. Need agreement on which path before
+step 3.
+
+Audit outputs:
+- `logs/audit/nc_coord_audit.tsv` — one row per bag with class + per-site identity count
+- `logs/audit/nc_coord_summary.tsv` — class counts
+- `logs/audit/pub_passing_coord_class.tsv` — cross-ref with v3 passing bags
 
 Everything below this line was written before the retractions and
 is NOT yet rewritten to reflect them. Specific claims about the 0.89
