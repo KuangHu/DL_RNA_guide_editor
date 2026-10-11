@@ -277,49 +277,94 @@ exact preservation.
 
 ### Smoke run (20 bags, local, ~3 min)
 
-Confirmed the pipeline runs end-to-end. Qualitative signal already
-visible:
-
-| condition | p99 max_mean_m | p99 max_n_support | median n_passing |
-|---|---|---|---|
-| real | **0.938** | 8 | 219 |
-| null1 dinuc-shuffle | 0.704 | 8 | 292 |
-| null2 4-mer shuffle | 0.741 | 8 | 483 |
-| null3 unpaired bag | 0.885 | 8 | 192 |
-| null4 RC+shuffle | 0.700 | 8 | 374 |
-
-- `max_mean_m` cleanly separates real from true nulls; null-3 is
-  tighter (0.885) as expected.
-- `max_n_support` is uninformative — saturates at K=8 for every
-  condition.
-- `n_passing` is **200–500 per bag across ALL conditions** → the loose
-  retention floor + permissive gates produce massive cluster slates.
-  The report threshold Phase G will pick drives this to single digits
-  per bag on nulls.
-- Analyzer picks `min_max_mean_m ≈ 0.78` where every null is ≤ 5%
-  pass-rate while real recall is 20% — too strict for a 20-bag sample.
-  Awaiting the 500-bag run.
+Confirmed the pipeline runs end-to-end on real data. Numbers superseded
+by the 500-bag calibration below.
 
 ### 500-bag calibration
 
-Submitted as Slurm job 26836963 on lr7 (`sbatch/v3_calib_nulls.sbatch`,
-2 h time limit, 4 CPUs, 500 bags from
-`fna_ins_discovery_v5_md_seed2/adapted.jsonl`). Expected runtime
-~75 min. On completion, run:
+Slurm job 26836963 on lr7 (`sbatch/v3_calib_nulls.sbatch`,
+4 CPUs). Completed 2026-10-10 23:23, elapsed **36:36**, exit 0.
+Input: 500 bags sampled from
+`fna_ins_discovery_v5_md_seed2/adapted.jsonl` with seed 2026.
+Each bag runs through Phase A→D under real + 4 null conditions
+(2,500 pipeline runs).
 
-```
-python scripts/analyze_v3_calib.py \
-  --details logs/v3_calib_500_details.tsv \
-  --target-null-pass 0.01
-```
+Outputs:
+- `logs/v3_calib_500_summary.tsv` — one row per condition
+- `logs/v3_calib_500_details.tsv` — one row per (bag, condition)
 
-Output picks:
-- `min_max_mean_m` such that every null's pass-rate ≤ 1%
-- `min_max_n_support` under the same constraint
-- Suggested `m_floor_report(L)` from REAL p25 of `best_m_at_top / L`
-  per `L`.
+**max_mean_m distribution** (best cluster per bag per condition):
+
+| condition | p25 | p50 | p75 | p90 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|---|
+| real              | 0.659 | 0.716 | 0.778 | 0.875 | **1.000** | 1.000 | 1.000 |
+| null1_dinuc       | 0.625 | 0.643 | 0.675 | 0.704 | 0.778 | 0.815 | 0.815 |
+| null2_4mer        | 0.629 | 0.657 | 0.683 | 0.727 | 0.822 | 0.879 | 0.879 |
+| null3_unpaired    | 0.638 | 0.675 | 0.741 | 0.787 | 0.889 | 1.000 | **1.000** |
+| null4_rc_shuf     | 0.629 | 0.643 | 0.675 | 0.711 | 0.778 | 0.815 | 0.815 |
+
+Reads:
+- real has a long upper tail — p99 reaches perfect m. Nulls 1/2/4 top
+  out at ~0.82.
+- null3 (unpaired flanks from a real donor bag) extends to max=1.000.
+  This is the expected caveat: a donor bag is itself a real bag and can
+  carry real signal — null3 is a plausibility bound, NOT a strict null.
+- max_n_support saturates at K=8 for every condition and does not
+  discriminate real from null. **It is dropped as a ranking signal.**
+
+### Chosen thresholds
+
+Analyzer target: null pass-rate ≤ 1 % for every strict null (null1,
+null2, null4). null3 reported separately with its caveat.
+
+| threshold | value | real recall | null1 | null2 | null3 | null4 |
+|---|---|---|---|---|---|---|
+| `min_max_mean_m` | **0.89** | **6.2 %** (31/500) | 0.0 % | 0.0 % | 0.20 % | 0.0 % |
+| `min_max_n_support` | — | — (saturates at K; drop as signal) | — | — | — | — |
+
+**`m_floor_report(L)` per L** (from real p25 of `best_m_at_top/L`):
+
+| L | n_real_bags | p25 | suggested `m_floor_report(L)` | fraction |
+|---|---|---|---|---|
+| 9  | 176 | 0.778 | 7 | 0.78 · L |
+| 10 | 236 | 0.600 | 6 | 0.60 · L |
+| 11 | 55  | 0.636 | 7 | 0.64 · L |
+| 12 | 11  | 0.667 | 8 | 0.67 · L |
+| 13 | 6   | 0.615 | 8 | 0.62 · L |
+
+Same as or slightly tighter than the current retention floor
+`⌈0.6 · L⌉`. The retention floor stays as-is (recall knob);
+`m_floor_report(L)` applies at the final ranking step.
+
+### Interpretation
+
+6.2 % of random v5 bags clear the 0.89 `max_mean_m` bar with every
+strict null below 1 %. The bars match the biology: most v5 bags are
+DDE/other transposases where the model-free scorer should NOT find a
+strong cross-site motif. Only a small tail — RNA-guided candidates
+plus whatever other systems have genuinely coherent target recognition
+— survives.
+
+null3's one max=1.000 case is the predicted leak: a donor bag that
+itself carried a real cluster, which the shuffled target bag's nc
+happened to also hit. This is not a correctness failure of v3 —
+it is why the plan treats null3 as a plausibility bound and why
+`occupied_carriers` / `pre_event_genome` from
+`top4_candidates/*/provenance.tsv` is the primary genome-level
+independence signal, not a 120-bp local background.
 
 ---
+
+## Acceptance against the four criteria
+
+Mapping to the review criteria from 2026-10-10:
+
+| # | criterion (zh) | coverage | status |
+|---|---|---|---|
+| 1 | 最佳命中分散时，能找回共同的次佳位置簇 | `test_phase_a` case 1 verifies retention preserves non-best; `test_phase_c` **case 1-strict** (added 2026-10-10) verifies full A→C surfaces the shared pos=80 cluster when each site's STRICT best is a different scattered position. The surviving cluster carries `n_sites_cluster_hit_is_best = 0` as the diagnostic. | **PASS** |
+| 2 | 实际 guide 和 target 都经过复杂度及 AT-rich 硬过滤 | `apply_phase_b` evaluates both sides on every hit. Cases 2/3/4/5 verify each gate on individual sequences; the E2E case verifies the ACGT-period-4 bag has **zero clusters** at the guide location after Phase B. AT_frac is a SEPARATE knob from complexity (case 5). | **PASS** |
+| 3 | 支持比例分母固定，重复背景不增加独立支持 | `compute_K_valid` freezes the denominator against site input adequacy only — downstream filtering never shrinks it (`test_phase_a` case 11). Chain-linked clonal flanks collapse to one component (`test_phase_c` case 12, `test_phase_d` case 7). `support_frac_bg_unique = n_support / n_local_bg_groups` as its own ranking column is specified for step 6; current `BgReport` has the primitives for it. | **partial** (support ratio frozen; bg-unique ranking column pending step 6) |
+| 4 | 完整搜索流程经过负对照校准，而不只是 smoke 测试 | 500-bag calibration run (job 26836963, 36:36 wall, 2500 pipeline executions on 4 nulls + real) with thresholds reported above. `min_max_mean_m = 0.89` gives real recall 6.2 % while every strict null's pass-rate is ≤ 0.0 % (null3 at 0.20 % with the documented caveat). | **PASS** (thresholds set; applying them in `candidates_v3.tsv` output is step 6) |
 
 ## Status
 
@@ -329,8 +374,8 @@ Output picks:
 | 2 | C cluster enumeration + partial D | 6, 9, 12 | DONE |
 | 3 | B motif gates + E2E | primitives, 2, 3, 4, 5, E2E | DONE |
 | 4 | D full + apply_phase_d_gate | 7, 8 permissive, 8 strict, mixed | DONE |
-| 5 | G 4-null calibration | smoke 20-bag + 500-bag Slurm (in flight) | 500-bag running |
-| 6 | ranking + final output schema (`candidates_v3.tsv`, `rejections_v3.tsv`) | — | pending |
+| 5 | G 4-null calibration + case 1-strict | 500-bag calibration + non-best cluster recovery through A→C | DONE |
+| 6 | ranking + final output schema (`candidates_v3.tsv`, `rejections_v3.tsv`) | apply chosen thresholds to real top-4 and all_candidates | pending |
 
 ### What's not yet done (step 6)
 

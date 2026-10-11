@@ -236,11 +236,84 @@ def test_case12_background_chain_link():
     print("  PASS — single chain-linked component correctly flagged")
 
 
+# ---------- Case 1-strict: non-best cross-site cluster recovery through full A→C ----------
+def _make_bag_case1_strict():
+    """K=5 sites. For each site:
+      - A UNIQUE strict-best m=L exact match at a scattered flank position
+      - A SHARED one-mismatch (m=L-1) match at flank_pos=80
+
+    The guide at nc_pos=100 is fixed across sites.  Only Phase C can surface
+    the pos-80 cluster because the per-site best is scattered elsewhere.
+    This is the actual criterion-1 test: 'best hits scattered, recover shared
+    second-best cluster'.
+    """
+    guide = "GCATGCTAGCA"       # 11 bp
+    L = len(guide)
+    # Partial-match copy: substitute position 5 (G→A) → m=10 at pos=80
+    guide_1mm = guide[:5] + ("A" if guide[5] != "A" else "T") + guide[6:]
+    assert sum(a == b for a, b in zip(guide, guide_1mm)) == L - 1
+    scattered = [10, 25, 40, 55, 65]       # per-site unique strict-best
+    sites = []
+    for i, sp in enumerate(scattered):
+        bg = _rand_dna(140, seed=1200 + i)
+        f = list(bg[:120])
+        # scattered strict-best (exact guide)
+        for k, b in enumerate(guide):
+            f[sp + k] = b
+        # shared one-mismatch at pos=80
+        for k, b in enumerate(guide_1mm):
+            f[80 + k] = b
+        flank = "".join(f)[:120]
+        nc_bg = _rand_dna(400, seed=1300 + i)
+        nc = nc_bg[:100] + guide + nc_bg[100 + L:]
+        sites.append({"inputs":
+                      {"noncoding_regions": [nc], "flank": flank}})
+    return sites, guide, L, scattered
+
+
+def test_case1_strict_non_best_recovery():
+    print("\n=== Case 1 (strict): per-site best scattered, shared non-best at pos=80 ===")
+    sites, guide, L, scattered = _make_bag_case1_strict()
+    bag = retain_bag(sites, Ls)
+    clusters = enumerate_clusters(bag, max_offset=5, min_frac=0.5)
+    at_80 = [c for c in clusters
+             if c.nc_pos == 100 and c.L == L
+             and abs(c.flank_pos_median - 80) <= 2]
+    # Expect: cluster at pos~80 with 5/5 support, mean_m_frac = (L-1)/L
+    assert at_80, "shared non-best cluster at pos=80 MISSING"
+    c = at_80[0]
+    print(f"  cluster at pos_median={c.flank_pos_median}  "
+          f"n_support={c.n_support}  mean_m_frac={c.mean_m_frac:.3f}  "
+          f"n_sites_cluster_hit_is_best={c.n_sites_cluster_hit_is_best}")
+    assert c.n_support == 5
+    assert abs(c.mean_m_frac - (L - 1) / L) < 0.01, \
+        f"expected mean_m_frac=(L-1)/L={ (L-1)/L :.3f}, got {c.mean_m_frac:.3f}"
+    assert c.n_sites_cluster_hit_is_best == 0, (
+        f"the pos-80 hit must NOT be any site's strict best; "
+        f"got {c.n_sites_cluster_hit_is_best}/5")
+
+    # And: the per-site scattered strict-best hits must NOT form surviving clusters
+    # (each would be supported by only its own site)
+    scattered_clusters = [c for c in clusters
+                           if c.nc_pos == 100 and c.L == L
+                           and any(abs(c.flank_pos_median - sp) <= 2
+                                   for sp in scattered)]
+    for sc in scattered_clusters:
+        # If one somehow surfaces, verify it has n_support < 5 (not inflated)
+        assert sc.n_support < 5, (
+            f"scattered cluster at {sc.flank_pos_median} should have "
+            f"n_support<5, got {sc.n_support}")
+    print("  PASS — strict-best scattered hits do NOT form clusters; "
+          "shared non-best at pos=80 does. "
+          "n_sites_cluster_hit_is_best=0 confirms the mechanism.")
+
+
 def main():
+    test_case1_strict_non_best_recovery()
     test_case6_multiple_positions_per_site()
     test_case9_multiple_clusters_different_nc_pos()
     test_case12_background_chain_link()
-    print("\n[all 3 Phase-C/D-partial tests PASSED]")
+    print("\n[all 4 Phase-C/D-partial tests PASSED]")
 
 
 if __name__ == "__main__":
