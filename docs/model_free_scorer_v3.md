@@ -572,21 +572,33 @@ Cross-site: `summary.tsv`, `inserts_pairwise.blast`,
    0/4/6 only). The insert IS a conserved ~1.8 kb mobile element.
    CDS03597 is one of its ORFs; Pfam / RNA-guided classification is
    a separate step not performed here.
-2. **Sites 4 and 7 share the same orthologous locus** — same contig
-   CP055119.1, same empty-locus coords 2599952–2600352, same
-   pre-event genome GCA_022354725.1. Chosen junctions differ by
-   42 bp (2600049 vs 2600091), inside each site's own
-   ambiguity window (65–107 bp). The "4 independent supporting
-   sites" is probably 3 at the orthologous-locus level (0, 4≡7, 6);
-   previous commit's "four independent insertions" was over-reach.
-3. **Decomposition is highly ambiguous** —
+2. **Sites 4 and 7 point at the SAME empty-locus reference** — same
+   contig CP055119.1, same empty-locus coords 2599952–2600352, same
+   pre-event genome GCA_022354725.1. Empty allele sequence is
+   identical. Occupied alleles align **same direction** at 99.236 %
+   = 2208 matches / 2225 bp. Chosen junctions differ by 42 bp
+   (2600049 vs 2600091), inside each site's own 65–107 bp ambiguity
+   window. **Treat sites 4 and 7 as one background group;**
+   whether they are two independent insertions or two
+   assembly-level decompositions of the same event is NOT settled
+   by loci.tsv alone — carrier-level evidence (strain phylogeny,
+   assembly dating, flanking-marker comparison) is needed. Both
+   "four independent insertions" (commit 6744793) and the earlier
+   phrasing "probably three at the orthologous-locus level" are
+   retracted — three distinct empty-allele references do not prove
+   three independent insertion events.
+3. **Decomposition is highly ambiguous at the boundary step** —
    `n_equivalent_decompositions ∈ {66, 108, 131, 155}` and
-   `junction_ambiguity_bp ∈ {65, 107, 130, 154}`. The chosen boundary
-   is one of hundreds of equally scored picks.
-   `decomposition_quality` is 0.015 (site 7), 0.043 (site 4), NA
-   (sites 0, 6 — exact method). This directly challenges the
-   assumption that the extracted nc / flank windows represent clean
-   element / host partition.
+   `junction_ambiguity_bp ∈ {65, 107, 130, 154}`. All 4 sites have
+   **low `decomposition_confidence`**: 0.008 (site 0), 0.009
+   (site 4), 0.006 (site 6), 0.015 (site 7). The two
+   `tolerant_alignment` sites separately report high
+   **`decomposition_quality`** (0.985 for site 4, 0.988 for site 7),
+   which means the allele-vs-allele alignment itself is clean — that
+   is compatible with high host-background similarity around the
+   insertion site and does NOT lower boundary uncertainty. The two
+   coexist. Clean background alignment plus 60–150 bp of boundary
+   uncertainty is the picture.
 4. **Every extracted "insert" overlaps the EMPTY allele at both
    edges** — insert's 5' first 61–127 bp match an empty-allele
    stretch at 92–96% id; insert's 3' last 138–179 bp match an
@@ -594,20 +606,64 @@ Cross-site: `summary.tsv`, `inserts_pairwise.blast`,
    present in the empty allele as real host DNA. See
    `boundary_overlap.tsv` for the full table.
 
-**Impact on the v3 Phase C signal:** the first ~100–180 bp of the
-extracted flank (immediately outside the chosen insert boundary) are
-not clean host — they are the host-matching edge zone of the "insert"
-displaced across the chosen boundary. The 40–55 bp Watson–Crick
-pairing observed in v1's `pairings/*.txt` falls at the leading edge
-of the extracted flank. Whether it represents (a) a true intra-element
-TIR made visible because the chosen boundary slices into it,
-(b) a boundary-decomposition artefact in which both nc and flank
-windows happen to be drawing from the same host-like repeat zone, or
-(c) something else, is NOT decided by this evidence pull. It is the
-step-3 / step-4 question.
+**Impact on the v3 Phase C signal — four cores are NOT all boundary
+artefact (reviewer-asserted):** per the reviewer's inspection of the
+actual N best boundary picks, under ALL optimal boundary choices
+sites 0 and 6 preserve the inside-vs-outside assignment of the two
+14-mer cores — the first core always sits inside the insert, the
+second core always outside. For sites 4 and 7 the two cores'
+inside/outside assignment changes with boundary choice. Sites 0 and
+6 therefore provide genuine same-direction repeat evidence that is
+independent of the decomposition pick; sites 4 and 7 are
+boundary-sensitive. (This claim is not yet reproduced in
+`boundary_stability.py`, which only shows the symmetric
+`junction_ambiguity_bp` window; replicating it needs the actual list
+of N best boundary positions — step-1 of the next-step order.)
+
+Also: the "continuous repeat length" measured in the OCCUPIED allele
+frame is **52, 107, 41, 65 bp** for sites 0, 4, 6, 7 respectively
+(verified by `boundary_stability.py`, see
+`occupied_core_stability.tsv`). Different from the lengths measured
+against the EMPTY target (reported in v1 as 52, 55, 41, 23). Any
+future figure must label which comparison frame
+(occupied / empty / extracted window) it uses.
+
+**Repeat type correction: this is a DIRECT REPEAT in the occupied
+allele forward strand, not an inverted repeat / TIR.** For all 4
+sites, `guide_core` appears twice on the occupied forward strand
+(once inside the insert at the chosen boundary + 1 bp, once outside
+at insert_end + 1 bp); `revcomp(guide_core)` is NOT found on the
+forward strand. The pairing display in v1 (`nc 5′→3′` vs `RC(flank)`)
+made this look like a classical TIR, but that was a display artefact
+of comparing a sequence to its RC — on the actual genomic
+forward strand of the occupied allele, the two cores read as
+identical 5′→3′, i.e. a direct repeat spanning the insertion.
+A direct repeat of 41–107 bp spanning the insertion is far too long
+to be a classical TSD (TSDs are typically 2–20 bp) and far too long
+to be a classical TIR anchor; it is more consistent with
+a composite element / target-site duplication of unusual length,
+or with a boundary that was placed inside a longer stretch of
+shared insert-vs-host sequence.
+
+**Most-reliable current description:** a real same-direction
+repeated match exists AND the insertion boundary is highly uncertain.
+Worth continuing to investigate. Not yet classifiable as TIR,
+DNA-guided, or extraction artefact.
 
 The current status of CDS03597 is unchanged by this commit:
 **(2) boundaries and pairing source to be verified**.
+
+### Next-step order (reviewer-set, 2026-10-11)
+
+1. Keep ALL best boundaries; add a per-cluster "candidate changes
+   with boundary" flag. Do NOT pre-trim the match zone.
+2. Use the conserved ORFs to unify complete-allele orientation and
+   align the four occupied alleles; relocate the nc context off the
+   fragile `insert_start + 1` anchor.
+3. Redraw the three-track figure (nc, flank, boundary) against the
+   REAL occupied allele; show both match zones, real CDS, and the
+   boundary-variable range; merge sites 4 and 7 for background
+   counting.
 
 ### Status propagated to the other candidates
 

@@ -51,19 +51,28 @@ So the insert IS a conserved ~1.8 kb mobile element. CDS03597 maps to
 one of these ORFs. Pfam / RNA-guided classification is a separate
 step not performed here.
 
-### 2. Decomposition is ambiguous at 60-180 bp scale
-`loci_evidence.tsv` for each site reports `n_equivalent_decompositions`
-in **{66, 108, 131, 155}** and `junction_ambiguity_bp` in **{65, 107,
-130, 154}**. The chosen "exact" or "tolerant_alignment" boundary is
-ONE of 66-155 equally supported picks; the actual boundary could lie
-anywhere in a 65-154 bp window.
+### 2. Decomposition boundary is highly uncertain
+`loci_evidence.tsv`:
+- `n_equivalent_decompositions` ∈ **{66, 108, 131, 155}**.
+- `junction_ambiguity_bp` ∈ **{65, 107, 130, 154}**.
+- `decomposition_confidence` ∈ **{0.008, 0.009, 0.006, 0.015}** —
+  LOW at all 4 sites.
+- `decomposition_quality` is 0.985 (site 4) and 0.988 (site 7) for
+  the two `tolerant_alignment` sites; NA for the two `exact` sites
+  (0, 6). High quality here means the allele-vs-allele alignment
+  itself is clean (high host-background similarity around the
+  insertion site) — it does NOT lower boundary uncertainty.
 
-For sites 4 and 7 — **same contig CP055119.1, same empty-locus coords
-(2599952-2600352), same pre-event genome GCA_022354725.1** — the two
-chosen junctions sit 42 bp apart (2600049 vs 2600091). This is well
-inside each site's own ambiguity zone (65-107 bp). Sites 4 and 7
-are plausibly **two decompositions of the same orthologous insertion**,
-not two independent events.
+For sites 4 and 7 — same contig CP055119.1, same empty-locus coords
+2599952–2600352, same pre-event genome GCA_022354725.1 — the empty
+allele is identical, and the occupied alleles align **same direction**
+at 99.236 % (2208 matches / 2225 bp). Chosen junctions sit 42 bp
+apart (2600049 vs 2600091), inside each site's own 65–107 bp
+ambiguity window. **Treat sites 4 and 7 as one background group**;
+whether they are two independent insertions or two assembly-level
+decompositions of one event is NOT settled by loci.tsv alone and
+needs carrier-level evidence (strain phylogeny, assembly dating,
+flanking-marker comparison).
 
 ### 3. "Insert edges" overlap host (empty) allele
 `boundary_overlap.tsv` and `site_<i>/insert_vs_empty.blast`: for every
@@ -76,44 +85,55 @@ Example — site 6:
 - insert[2:62]       (first 61 bp)   → empty[251:310] at 91.8%
 
 Because the hits are present in the **empty** allele too, these are
-real host-flanking sequences. Interpretations (not decided here):
+real host-flanking sequences. Deciding between a composite /
+replicative element vs. a boundary mis-call requires: aligning the
+full insert against the EMPTY-ALLELE / seed-genome contig flanks of
+all four sites, checking whether the ORFs' coding boundaries sit
+comfortably inside the "trimmed" insert, and examining whether the
+host-matching edges carry element-family signatures.
 
-- **Boundary mis-call**: the decomposition pipeline chose boundaries
-  60-180 bp outside the TRUE element edge, pulling host sequence into
-  the "insert". This is consistent with n_equivalent_decompositions in
-  the hundreds and with pre_event_confidence being low (0.043 for
-  site 4, 0.015 for site 7, 0.250 for site 0).
-- **Composite / replicative element**: the mobile element genuinely
-  carries ~100-180 bp of host-sequence-like repeat at each end.
+### 4. Occupied-frame measurement: 52 / 107 / 41 / 65 bp direct repeat
+`occupied_core_stability.tsv` (from `scripts/boundary_stability.py`)
+localises the two 14-mer cores in each site's occupied allele:
 
-Deciding between these requires: aligning the full insert against the
-EMPTY-ALLELE / seed-genome contig flanks of all four sites, looking at
-whether the ORFs' coding boundaries sit comfortably inside the "trimmed"
-insert that would remain after removing the host-matching edges, and
-examining whether the host-matching edges carry element-family
-signatures (TIRs with mobile-element characteristics vs plain host DNA).
+| site | repeat_type | core_a_pos | core_b_pos | insert | DIRECT-repeat total |
+|---|---|---|---|---|---|
+| 0 | direct | 221 | 2045 | [220..2044) | **52 bp**  (L=14, left=0,  right=38) |
+| 4 | direct |  98 | 1922 | [97..1921)  | **107 bp** (L=14, left=1,  right=92) |
+| 6 | direct | 250 | 2074 | [249..2073) | **41 bp**  (L=14, left=0,  right=27) |
+| 7 | direct | 140 | 1965 | [139..1964) | **65 bp**  (L=14, left=1,  right=50) |
 
-### 4. Impact on the v3 Phase C "shared guide" signal
-The v3 cluster at `nc_pos=1, L=14, flank_pos=45` extracted guide
-`nc[1:15] = TTTAGCGCAGGGAA` and matched it to `RC(flank[45:59])` at
-all 4 sites. The nc comes from the **extracted** mobile-element
-noncoding region (near CDS03597); the flank comes from the **extracted**
-host context after the chosen insert boundary. The v1 pairings showed
-this 14-mer match extends 40-55 bp through contiguous Watson-Crick
-pairing on 3 of 4 sites.
+For every site: `guide_core` is found 2× on the occupied forward
+strand (NOT `revcomp(guide_core)`). The chosen boundary places
+core_a 1 bp inside the insert and core_b 1 bp outside — right
+between the two direct-repeat copies.
 
-Because the chosen boundary is in a host-matching zone (finding 3),
-the FIRST ~100-180 bp of the extracted flank are not pure host — they
-are the host-matching edge of the "insert" placed on the flank side of
-the chosen boundary. If the TRUE boundary is 100+ bp inward, those bp
-belong to the ELEMENT, not the host. In that case the 40-55 bp
-"guide-target pairing" is intra-element inverted-repeat content
-(classical TIR), not RNA-guided target recognition — but equally, if
-the boundary is correct, the 40-55 bp stretch is a real cross-strand
-match within the extracted window.
+**This is a direct repeat on the occupied forward strand, not an
+inverted repeat / TIR.** The v1 pairing display (nc vs RC(flank))
+made it look TIR-like by comparing a sequence to its reverse
+complement; on genomic forward-strand terms, the two cores are the
+same 14-mer in the same orientation, bracketing the insertion.
 
-Nothing above decides between TIR / boundary-artefact / neither. That
-is the explicit outcome of this evidence pull: it is not a decision.
+The lengths differ from the v1 nc-vs-RC(flank) measurements
+(52, 55, 41, 23) and from the empty-target overlap lengths
+(61–127 at 5′ edge + 138–179 at 3′ edge). Any future figure must
+label which frame the number comes from (occupied / empty /
+extracted window / pairings).
+
+### 5. Impact on the v3 Phase C "shared guide" signal
+Not fully decided here. Per reviewer inspection, sites 0 and 6
+preserve the inside/outside assignment of the two cores at ALL best
+boundary picks; sites 4 and 7 flip across boundary choices. So the
+same-direction repeat at sites 0 and 6 is NOT a pure
+boundary-decomposition artefact.
+
+Most-reliable current description: a real same-direction (direct)
+repeat spanning the insertion exists at all 4 sites, AND the
+insertion boundary is highly uncertain (65–154 bp ambiguity window,
+66–155 equivalent decompositions, decomposition_confidence
+0.006–0.015 everywhere). The signal is worth continuing to
+investigate; it is NOT yet classifiable as TIR, DNA-guided, or
+extraction artefact.
 
 ## What is NOT in this folder (and is required to decide)
 
