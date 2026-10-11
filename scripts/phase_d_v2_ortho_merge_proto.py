@@ -94,24 +94,33 @@ def ortho_groups(site_locus_info: dict[int, dict],
 
 def gapped_identity(a: str, b: str, gap_open: int = -2, gap_ext: int = -1,
                        match: int = 1, mismatch: int = -1,
-                       ) -> tuple[float, int, int, int]:
+                       ) -> tuple[float, int, int, int, int, int]:
     """R3: Needleman-Wunsch global alignment, affine gaps.
-    Returns (identity, coverage_length_bp, n_matches, n_indels).
+    Returns (identity, paired_bp, n_matches, n_mismatches, n_indels,
+             coverage_ratio_denominator).
 
-    Identity = matches / aligned_length (both counted over the gapped
-    alignment). Coverage = aligned_length (excluding leading/trailing
-    gaps on either sequence — so a tiny common core doesn't inflate
-    identity). n_indels is the count of gap characters in the alignment
-    (both sequences combined).
+    - paired_bp = n_matches + n_mismatches (counts positions where BOTH
+      sequences have a base; excludes any gap column).
+    - identity = n_matches / paired_bp (0.0 if paired_bp == 0).
+    - n_indels = count of gap columns in the alignment, both sequences
+      combined.
+    - coverage_ratio_denominator = min(len(a), len(b)) — divide
+      paired_bp by this to get the coverage ratio relative to the
+      shorter input (excludes aligned-length inflation from indels).
 
-    This replaces offset_tolerant_identity, which only slides without
-    allowing internal gaps and misclassifies "same 100 bp sequence with
-    1 bp insertion" as ~65 % identity.
+    This replaces offset_tolerant_identity. Reviewer's "100 bp same +
+    1 bp internal insertion" test: old 0.640 → new 0.990 at 1 indel.
+
+    Traceback fix (2026-10-11): the previous version picked
+    max(M[i-1][j], IX[i-1][j]) as IX's predecessor; that is wrong when
+    gap_open != gap_ext, because the transition scores differ
+    (M→IX adds gap_open, IX→IX adds gap_ext). The correct
+    predecessor is the one whose score+transition equals IX[i][j].
+    Likewise for IY. Score and indel count are now consistent with
+    the DP optimum.
     """
-    if not a or not b: return (0.0, 0, 0, 0)
+    if not a or not b: return (0.0, 0, 0, 0, 0, min(len(a), len(b)))
     la, lb = len(a), len(b)
-    # Simple O(la*lb) NW with affine gaps. For our use case (both ≤ ~120 bp)
-    # this is fine.
     NEG = -10**9
     M  = [[NEG] * (lb + 1) for _ in range(la + 1)]
     IX = [[NEG] * (lb + 1) for _ in range(la + 1)]
@@ -127,31 +136,45 @@ def gapped_identity(a: str, b: str, gap_open: int = -2, gap_ext: int = -1,
             M[i][j]  = max(M[i-1][j-1], IX[i-1][j-1], IY[i-1][j-1]) + s
             IX[i][j] = max(M[i-1][j] + gap_open, IX[i-1][j] + gap_ext)
             IY[i][j] = max(M[i][j-1] + gap_open, IY[i][j-1] + gap_ext)
-    # Traceback for identity/coverage/indels
+
     i, j = la, lb
     final_scores = {"M": M[la][lb], "IX": IX[la][lb], "IY": IY[la][lb]}
     state = max(final_scores, key=final_scores.get)
-    aligned_len = n_match = n_indel = 0
+    aligned_len = n_match = n_mismatch = n_indel = 0
     while i > 0 or j > 0:
         aligned_len += 1
         if state == "M":
+            # M[i][j] came from max of (M, IX, IY)[i-1][j-1] + s;
+            # transition cost identical across predecessors, so the
+            # argmax of the three predecessor cells is the predecessor.
             if a[i-1] == b[j-1]: n_match += 1
-            cands = [("M", M[i-1][j-1]), ("IX", IX[i-1][j-1]),
-                      ("IY", IY[i-1][j-1])]
-            next_state = max(cands, key=lambda t: t[1])[0] if i > 0 and j > 0 else "M"
+            else:                n_mismatch += 1
+            if i > 0 and j > 0:
+                cands = [("M", M[i-1][j-1]), ("IX", IX[i-1][j-1]),
+                          ("IY", IY[i-1][j-1])]
+                next_state = max(cands, key=lambda t: t[1])[0]
+            else:
+                next_state = "M"
             i -= 1; j -= 1; state = next_state
         elif state == "IX":
+            # IX[i][j] came from (M[i-1][j] + gap_open) OR
+            # (IX[i-1][j] + gap_ext). Pick the one that actually equals
+            # IX[i][j], compared with gap-adjusted scores.
             n_indel += 1
-            cands = [("M", M[i-1][j]), ("IX", IX[i-1][j])]
-            next_state = max(cands, key=lambda t: t[1])[0]
+            from_M  = M[i-1][j]  + gap_open
+            from_IX = IX[i-1][j] + gap_ext
+            next_state = "M" if from_M >= from_IX else "IX"
             i -= 1; state = next_state
         else:  # IY
             n_indel += 1
-            cands = [("M", M[i][j-1]), ("IY", IY[i][j-1])]
-            next_state = max(cands, key=lambda t: t[1])[0]
+            from_M  = M[i][j-1]  + gap_open
+            from_IY = IY[i][j-1] + gap_ext
+            next_state = "M" if from_M >= from_IY else "IY"
             j -= 1; state = next_state
-    identity = n_match / aligned_len if aligned_len else 0.0
-    return (identity, aligned_len, n_match, n_indel)
+    paired_bp = n_match + n_mismatch
+    identity = (n_match / paired_bp) if paired_bp else 0.0
+    cov_denom = min(la, lb)
+    return (identity, paired_bp, n_match, n_mismatch, n_indel, cov_denom)
 
 
 # Kept for backward compat; new code should call gapped_identity.
@@ -238,43 +261,55 @@ def main():
     flanks_per_site = {ss.site_idx: sites[ss.site_idx]["inputs"]["flank"]
                         for ss in cluster.supporting_sites}
 
-    # 5. R3: gapped pairwise identity for left & right background separately
+    # 5. R3-fix: gapped pairwise identity per side. Side-selection logic
+    # must FILTER BY COVERAGE FIRST (min_cov threshold), THEN pick the
+    # side with highest identity among qualifying candidates. The
+    # previous "pick highest identity, then check coverage" misses the
+    # case where left is 10bp/100% but right is 80bp/90%: it would pick
+    # left and reject merge due to coverage, instead of picking the
+    # qualifying right side.
+    min_cov = 20  # paired_bp minimum for a side to qualify for merging
     pair_rows = []
     for i, ssi in enumerate(cluster.supporting_sites):
         for ssj in cluster.supporting_sites[i + 1:]:
             si, sj = ssi.site_idx, ssj.site_idx
             fA, fB = flanks_per_site[si], flanks_per_site[sj]
-            # Mask + extract left/right flanks of each
             def masked(f: str, fp: int) -> tuple[str, str]:
                 lo = max(0, fp - args.margin)
                 hi = min(len(f), fp + args.L + args.margin)
                 return f[:lo], f[hi:]
             L_A, R_A = masked(fA, ssi.chosen_hit.flank_pos)
             L_B, R_B = masked(fB, ssj.chosen_hit.flank_pos)
-            # R3: gapped NW alignment handles internal indels; separate per side
-            left_id, left_cov, left_m, left_g = gapped_identity(L_A, L_B)
-            right_id, right_cov, right_m, right_g = gapped_identity(R_A, R_B)
-            # Determine repeat_source — the side (left / right) carrying the
-            # higher identity, weighted lightly by coverage (identity breaks ties).
-            if left_cov == 0 and right_cov == 0:
-                best_side = "none"
-                best_id, best_cov, best_m, best_g = 0.0, 0, 0, 0
-            elif left_id >= right_id:
-                best_side = "left"
-                best_id, best_cov, best_m, best_g = left_id, left_cov, left_m, left_g
+            l_id, l_pair, l_m, l_mm, l_ind, l_denom = gapped_identity(L_A, L_B)
+            r_id, r_pair, r_m, r_mm, r_ind, r_denom = gapped_identity(R_A, R_B)
+            # Qualifying sides first
+            qualifiers = []
+            if l_pair >= min_cov:
+                qualifiers.append(("left", l_id, l_pair, l_m, l_ind, l_denom))
+            if r_pair >= min_cov:
+                qualifiers.append(("right", r_id, r_pair, r_m, r_ind, r_denom))
+            if qualifiers:
+                best = max(qualifiers, key=lambda t: (t[1], t[2]))
+                best_side, best_id, best_pair, best_m, best_ind, best_denom = best
             else:
-                best_side = "right"
-                best_id, best_cov, best_m, best_g = right_id, right_cov, right_m, right_g
+                best_side = "none"
+                best_id = best_pair = best_m = best_ind = 0
+                best_denom = max(l_denom, r_denom, 1)
             pair_rows.append({
                 "si": si, "sj": sj,
-                "left_identity": left_id, "left_cov": left_cov,
-                "left_matches": left_m, "left_indels": left_g,
-                "right_identity": right_id, "right_cov": right_cov,
-                "right_matches": right_m, "right_indels": right_g,
+                "left_identity": l_id, "left_paired_bp": l_pair,
+                "left_matches": l_m, "left_mismatches": l_mm,
+                "left_indels": l_ind, "left_cov_denom": l_denom,
+                "left_cov_ratio": (l_pair / l_denom) if l_denom else 0.0,
+                "right_identity": r_id, "right_paired_bp": r_pair,
+                "right_matches": r_m, "right_mismatches": r_mm,
+                "right_indels": r_ind, "right_cov_denom": r_denom,
+                "right_cov_ratio": (r_pair / r_denom) if r_denom else 0.0,
                 "repeat_source": best_side,
                 "repeat_source_identity": best_id,
-                "repeat_source_cov": best_cov,
-                "repeat_source_indels": best_g,
+                "repeat_source_paired_bp": best_pair,
+                "repeat_source_indels": best_ind,
+                "min_cov_threshold_bp": min_cov,
                 "same_ortho_group": any(si in g and sj in g for g in ortho),
             })
 
@@ -292,14 +327,12 @@ def main():
         for s in g[1:]:
             if s in parent and g[0] in parent:
                 union(g[0], s)
-    # Then merge by sequence identity. R3: use the higher-identity side's
-    # gapped identity + its coverage, instead of a concatenated identity.
-    # Reasoning: when one side is edge-insufficient, concatenation dilutes
-    # the signal from the usable side. A single clean side above threshold
-    # is clonal evidence.
+    # Merge by sequence identity. R3-fix: side selection already filtered
+    # by paired_bp >= min_cov_threshold; the chosen side's identity passing
+    # clonal_threshold is sufficient.
     for r in pair_rows:
-        if r["repeat_source_identity"] > args.clonal_threshold \
-                and r["repeat_source_cov"] >= 20:
+        if r["repeat_source"] != "none" and \
+                r["repeat_source_identity"] > args.clonal_threshold:
             if r["si"] in parent and r["sj"] in parent:
                 union(r["si"], r["sj"])
     merged = {}
@@ -323,17 +356,23 @@ def main():
             f.write(f"{g[0]}\t{','.join(str(x) for x in g)}\n")
 
     with (out / "pairwise.tsv").open("w") as f:
-        f.write("si\tsj\tsame_ortho\tleft_id\tleft_cov\tleft_matches\tleft_indels\t"
-                "right_id\tright_cov\tright_matches\tright_indels\t"
-                "repeat_source\trepeat_src_id\trepeat_src_cov\trepeat_src_indels\n")
+        f.write("si\tsj\tsame_ortho\t"
+                "left_id\tleft_paired_bp\tleft_cov_ratio\tleft_matches\t"
+                "left_mismatches\tleft_indels\tleft_cov_denom\t"
+                "right_id\tright_paired_bp\tright_cov_ratio\tright_matches\t"
+                "right_mismatches\tright_indels\tright_cov_denom\t"
+                "repeat_source\trepeat_src_id\trepeat_src_paired_bp\tmin_cov_bp\n")
         for r in pair_rows:
-            f.write(f"{r['si']}\t{r['sj']}\t{r['same_ortho_group']}\t"
-                     f"{r['left_identity']:.3f}\t{r['left_cov']}\t"
-                     f"{r['left_matches']}\t{r['left_indels']}\t"
-                     f"{r['right_identity']:.3f}\t{r['right_cov']}\t"
-                     f"{r['right_matches']}\t{r['right_indels']}\t"
-                     f"{r['repeat_source']}\t{r['repeat_source_identity']:.3f}\t"
-                     f"{r['repeat_source_cov']}\t{r['repeat_source_indels']}\n")
+            f.write(
+                f"{r['si']}\t{r['sj']}\t{r['same_ortho_group']}\t"
+                f"{r['left_identity']:.3f}\t{r['left_paired_bp']}\t"
+                f"{r['left_cov_ratio']:.3f}\t{r['left_matches']}\t"
+                f"{r['left_mismatches']}\t{r['left_indels']}\t{r['left_cov_denom']}\t"
+                f"{r['right_identity']:.3f}\t{r['right_paired_bp']}\t"
+                f"{r['right_cov_ratio']:.3f}\t{r['right_matches']}\t"
+                f"{r['right_mismatches']}\t{r['right_indels']}\t{r['right_cov_denom']}\t"
+                f"{r['repeat_source']}\t{r['repeat_source_identity']:.3f}\t"
+                f"{r['repeat_source_paired_bp']}\t{r['min_cov_threshold_bp']}\n")
 
     # 8. Compare to current Phase D
     with (out / "comparison.md").open("w") as f:
@@ -353,16 +392,20 @@ def main():
         f.write(f"- ortho_locus_groups (from loci.tsv): {ortho}\n")
         f.write(f"- n_local_bg_groups_v2 (ortho + seq merge): {n_groups_v2}\n")
         f.write(f"- groups: {merged_groups}\n\n")
-        f.write(f"## Per-pair repeat source (gapped identity, R3)\n")
-        f.write("| si | sj | same_ortho | left_id | left_cov | left_indels | "
-                 "right_id | right_cov | right_indels | repeat_source | src_id | src_cov |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write(f"## Per-pair side selection (R3-fix: coverage-first, "
+                 f"then identity)\n")
+        f.write("| si | sj | same_ortho | left (id/paired_bp/indels) | "
+                 "right (id/paired_bp/indels) | chosen | chosen id | "
+                 "chosen paired_bp |\n")
+        f.write("|---|---|---|---|---|---|---|---|\n")
         for r in pair_rows:
             f.write(f"| {r['si']} | {r['sj']} | {r['same_ortho_group']} | "
-                     f"{r['left_identity']:.3f} | {r['left_cov']} | {r['left_indels']} | "
-                     f"{r['right_identity']:.3f} | {r['right_cov']} | {r['right_indels']} | "
-                     f"{r['repeat_source']} | {r['repeat_source_identity']:.3f} | "
-                     f"{r['repeat_source_cov']} |\n")
+                     f"{r['left_identity']:.3f}/{r['left_paired_bp']}/"
+                     f"{r['left_indels']} | "
+                     f"{r['right_identity']:.3f}/{r['right_paired_bp']}/"
+                     f"{r['right_indels']} | {r['repeat_source']} | "
+                     f"{r['repeat_source_identity']:.3f} | "
+                     f"{r['repeat_source_paired_bp']} |\n")
 
     print(f"\nCurrent Phase D: n_local_bg_groups={orig_bg.n_local_bg_groups}  "
           f"groups={[g.members for g in orig_bg.groups]}  passes={orig_bg.passes_bg_gate}")

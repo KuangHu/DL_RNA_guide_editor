@@ -70,7 +70,20 @@ def test_case17_center_in_gap():
 
 
 def test_case18_half_integer_median():
-    print("\n=== Case 18: fixture [0,1,10,10] max_offset=5 — float median=5.5 ===")
+    """R4-strengthen: this assertion MUST FAIL on pre-R4 int-median code,
+    not merely pass on post-R4. The previous version only checked
+    |pos - c.flank_pos_median| <= max_offset, which pre-R4 satisfies
+    because it reports int(5.5)=5 as the median (|0-5|=5<=5 passes).
+
+    Strengthened checks:
+      (a) Explicitly assert NO 4-support cluster exists for the fixture.
+          Pre-R4 code emits exactly such a cluster at median=5.
+      (b) Compute the TRUE float median from the supporters' positions
+          and assert every supporter is within max_offset of the TRUE
+          median, not the (possibly int-truncated) reported median.
+    """
+    from statistics import median as stat_median
+    print("\n=== Case 18 (strengthened): [0,1,10,10] max_offset=5, true median 5.5 ===")
     bag = make_bag_fixture([0, 1, 10, 10])
     clusters = enumerate_clusters(bag, max_offset=5, min_frac=0.5)
     at_100 = [c for c in clusters if c.nc_pos == 100 and c.L == 11]
@@ -78,29 +91,37 @@ def test_case18_half_integer_median():
                      [ss.chosen_hit.flank_pos for ss in c.supporting_sites])
                     for c in at_100]
     print(f"  clusters: {cluster_desc}")
-    # Invariant: every supporter must be within max_offset of cluster median
+
+    # (a) No 4-support cluster is permitted — would need all 4 of
+    # [0,1,10,10] bunched; true float median = 5.5; |0 - 5.5| = 5.5 > 5
+    # so the supporter at 0 must be excluded.
     for c in at_100:
-        for ss in c.supporting_sites:
-            assert abs(ss.chosen_hit.flank_pos - c.flank_pos_median) <= 5, (
-                f"R4 bug: supporter at {ss.chosen_hit.flank_pos} is "
-                f"{abs(ss.chosen_hit.flank_pos - c.flank_pos_median)} bp "
-                f"from cluster median {c.flank_pos_median}, "
-                f"exceeds max_offset=5")
-    # The 4-support cluster that pre-R4 code would emit (median=5 int,
-    # supporter at 0 included) must NOT exist. The largest cluster
-    # containing supporter 0 must be ≤ 3 OR excluded.
-    cluster_with_zero = [c for c in at_100
-                          if any(ss.chosen_hit.flank_pos == 0
-                                 for ss in c.supporting_sites)]
-    print(f"  clusters containing supporter at 0: "
-          f"{[(c.flank_pos_median, c.n_support) for c in cluster_with_zero]}")
-    for c in cluster_with_zero:
-        # The 0-supporter must be < 5 from the median
-        assert c.flank_pos_median <= 5.0, (
-            f"cluster at median={c.flank_pos_median} includes supporter 0; "
-            f"max_offset invariant violated")
-    print(f"  PASS — half-integer median correctly handled; no supporter "
-          f"beyond max_offset of cluster median")
+        if c.n_support >= 4:
+            raise AssertionError(
+                f"PRE-R4 REGRESSION DETECTED: cluster at median="
+                f"{c.flank_pos_median} with n_support={c.n_support} supports "
+                f"{[ss.chosen_hit.flank_pos for ss in c.supporting_sites]}. "
+                f"Pre-R4 int-median code emits this 4-support cluster at "
+                f"int(5.5)=5; the supporter at 0 is 5.5 bp from the TRUE "
+                f"median 5.5 and must be dropped under max_offset=5.")
+
+    # (b) Independent true-median invariant: for every cluster, compute
+    # the true float median of the ACTUAL supporter positions and verify
+    # every supporter is within max_offset of THAT (not the stored int
+    # median that pre-R4 would report).
+    for c in at_100:
+        positions = [ss.chosen_hit.flank_pos for ss in c.supporting_sites]
+        true_med = float(stat_median(positions))
+        worst = max(abs(p - true_med) for p in positions)
+        assert worst <= 5, (
+            f"R4 BUG: cluster at reported median={c.flank_pos_median} "
+            f"has supporters {positions}; TRUE float median={true_med}; "
+            f"worst supporter is {worst} bp from true median > max_offset=5. "
+            f"Pre-R4 could emit this because int(true_med)=5 made the "
+            f"check pass against the wrong reference.")
+
+    print(f"  PASS — no 4-support cluster; all supporters within max_offset "
+          f"of TRUE float median")
 
 
 def test_case19_tight_window():

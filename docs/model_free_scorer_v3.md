@@ -824,6 +824,74 @@ correctly rejected by the tighter float window).
 Also updated `scripts/tests/test_phase_c_clustering.py` format string
 to accept float median (`:5.1f` instead of `:3d`).
 
+### Reviewer R3-fix + R4-strengthen + R1-bounds (2026-10-11, after b210285)
+
+**R3-fix** — three bugs in `gapped_identity` / side-selection:
+
+1. **Affine-gap traceback was wrong**. Previous code picked
+   `max(M[i-1][j], IX[i-1][j])` as `IX[i][j]`'s predecessor, but
+   those scores do NOT include the gap transition cost
+   (`gap_open` vs `gap_ext`). When `M[i-1][j] == IX[i-1][j]`,
+   `max()` returns M (first in list), but the correct predecessor
+   is IX (because `IX+gap_ext > M+gap_open`). Reviewer example:
+   DP optimum = -17, old trace returned -19. Fix: compare
+   `M[i-1][j]+gap_open` vs `IX[i-1][j]+gap_ext` and pick the one
+   that matches `IX[i][j]`. Same for IY. Verified on 60 bp sequence
+   with 4+2 bp separate deletions: matches=54, mismatches=0, indels=6
+   → score 54·1 + 2·(−2) + 4·(−1) = 46 = DP optimum.
+2. **Coverage mis-defined**. Docstring said "excludes terminal gaps"
+   but code returned `aligned_len`, which included every gap column.
+   Replaced with `paired_bp = n_matches + n_mismatches` (= real
+   alignment positions where both sequences contribute a base). Also
+   added `coverage_ratio = paired_bp / min(len(a), len(b))` and
+   explicit `n_mismatches` + `n_indels` columns in the pairwise TSV.
+3. **Side selection: cover first, pick identity second**. Previously
+   the higher-identity side was selected and then had to pass a
+   coverage threshold — a left-side 10 bp / 100% beat a right-side
+   80 bp / 90% and then failed the merge because coverage was too
+   low. Fix: filter sides by `paired_bp >= min_cov` (default 20) first,
+   then pick the highest-identity qualifying side. Verified on the
+   reviewer's exact case: left (10 / 1.000) and right (80 / 0.900) →
+   left disqualified (10 < 20), right chosen, merged at
+   `clonal_threshold=0.85`.
+
+**R4-strengthen** — reviewer ran the previous case 18 assertion
+through the pre-R4 int-median code and it still PASSED, because the
+check `|pos - c.flank_pos_median| <= max_offset` evaluates against
+the (int-truncated) reported median, which pre-R4 would report as 5
+for the fixture `[0,1,10,10]` — making `|0-5|=5 ≤ 5` succeed.
+
+Strengthened case 18 now asserts:
+- (a) **No 4-support cluster is permitted** for the fixture. Pre-R4
+  code emits exactly this at median=5; post-R4 splits into two
+  2-support clusters at 0.5 and 10.
+- (b) **True-median invariant**: for every emitted cluster, compute
+  the TRUE float median from supporter positions and assert every
+  supporter is within `max_offset` of THAT, independent of the
+  stored (possibly int-truncated) median.
+
+Verified by running an in-memory **pre-R4 int-median variant** of
+`enumerate_clusters` on the fixture: it emits the forbidden
+`(median=5, n_support=4, supports=[0,1,10,10])` cluster. The
+strengthened assertions catch it; the post-R4 code passes.
+
+**R1-bounds** — `project_interval` in `scripts/nc_coord_mapping.py`
+now:
+- rejects `concat_lo >= concat_hi` with status `empty_interval`;
+- rejects `o1 < 0` or `o1 + L > src.length` with status
+  `out_of_fragment_bounds`;
+- rejects projected `occ_lo < 0`, `occ_hi > occupied_len`, or
+  `occ_lo >= occ_hi` with status `out_of_bounds`.
+
+Only `status == "ok"` should feed formal downstream clustering;
+`partial_<N>` / `ambiguous_source` / `missing_source` / `spacer` /
+`crosses_spacer` / `crosses_fragment_boundary` /
+`out_of_fragment_bounds` / `out_of_bounds` kept as diagnostic.
+
+Integration of R1/R2/R3 into the main pipeline + R5 (shared
+calibration/scan statistic + rename) are the next-phase items,
+per the reviewer order.
+
 ### Status propagated to the other candidates
 
 The alignment inspection has only been performed on CDS03597 and (in

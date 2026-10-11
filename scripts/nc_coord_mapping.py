@@ -146,13 +146,22 @@ def concat_pos_to_frag(nc_frags: list[str], concat_pos: int,
 
 
 def project_interval(nc_frags: list[str], sources: list[FragmentSource],
-                       concat_lo: int, concat_hi: int) -> CoordProjection:
+                       concat_lo: int, concat_hi: int,
+                       occupied_len: Optional[int] = None,
+                       ) -> CoordProjection:
     """Project the concat interval [concat_lo, concat_hi) into occupied.
 
     Returns a CoordProjection whose occupied_lo/_hi describe the
-    strand-corrected projection of the FULL interval.
+    strand-corrected projection of the FULL interval. Status is "ok" only
+    when (a) the fragment source is unique and (b) the projected interval
+    stays within fragment bounds and (when occupied_len is given) within
+    [0, occupied_len]. Any other case yields a non-ok status so integration
+    code can filter by `status == "ok"`.
     """
     L = concat_hi - concat_lo
+    if L <= 0:
+        return CoordProjection(-1, -1, None, None, None, True,
+                                "empty_interval", f"L={L}")
     f1, o1, s1 = concat_pos_to_frag(nc_frags, concat_lo)
     f2, o2, s2 = concat_pos_to_frag(nc_frags, concat_hi - 1)
     if s1 or s2:
@@ -168,13 +177,30 @@ def project_interval(nc_frags: list[str], sources: list[FragmentSource],
         return CoordProjection(f1, o1, None, None, None, False,
                                 "missing_source",
                                 f"fragment {f1} not located in occupied")
+
+    # Within-fragment bounds check: o1 + L must fit inside the fragment
+    if o1 < 0 or o1 + L > src.length:
+        return CoordProjection(f1, o1, None, None, None, True,
+                                "out_of_fragment_bounds",
+                                f"offset o1={o1} + L={L} exceeds "
+                                f"fragment length {src.length}")
+
     if src.strand == "+":
         occ_lo = src.occupied_lo + o1
         occ_hi = occ_lo + L
     else:
-        # strand '-': reverse order
         occ_hi = src.occupied_hi - o1
         occ_lo = occ_hi - L
+
+    # Occupied-coord bounds check: projected interval must be within
+    # [0, src.occupied_hi] (and within [0, occupied_len] if provided).
+    hard_hi = occupied_len if occupied_len is not None else src.occupied_hi
+    if occ_lo < 0 or occ_hi > hard_hi or occ_lo >= occ_hi:
+        return CoordProjection(f1, o1, occ_lo, occ_hi, src.strand, True,
+                                "out_of_bounds",
+                                f"projected [{occ_lo}, {occ_hi}) outside "
+                                f"[0, {hard_hi}]")
+
     ambiguous = src.status.startswith("ambiguous") or src.status.startswith("partial")
     status = "ok" if src.status == "unique" else "ambiguous_source"
     return CoordProjection(f1, o1, occ_lo, occ_hi, src.strand,
