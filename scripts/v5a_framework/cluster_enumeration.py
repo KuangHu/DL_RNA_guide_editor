@@ -1,23 +1,22 @@
 """Phase C of model-free scorer v3 — exhaustive position-cluster enumeration.
 
-Consumes BagRetention from Phase A and finds across-site flank_pos clusters
-by enumerating a window around EVERY observed hit position (not iterating
-from a single seed median).  Each site contributes at most one hit per
-window — the one closest to the window center.
+Consumes BagRetention from Phase A and finds across-site flank_pos clusters.
 
-Correctness points vs any seed-median approach:
-  - Every observed flank_pos is considered as a window center → recovery of
-    a non-best cross-site cluster is independent of which hit happens to
-    appear first.
-  - Each site contributes at most one hit per window; the chosen hit's
-    rank_within_site is recorded.
-  - Support fraction uses the FROZEN K_valid from Phase A as denominator,
-    not the per-cluster site count.
-  - Overlapping windows are deduplicated by Jaccard overlap of supporting
-    sites + distance between medians (keep the tighter MAD).
+**P2b fixes vs the original (2026-10-11):**
 
-Public API:
-  enumerate_clusters(bag, max_offset=5, min_frac=0.5) -> list[Cluster]
+  bug 1  Original enumerated candidate window centers at `{h.flank_pos for h
+         in all_hits}` ONLY. For positions [0, 0, 10, 10] with max_offset=5
+         this yields centers {0, 10} and misses the 4-support cluster whose
+         natural center is 5. Fixed: candidate centers = every integer in
+         [min_pos, max_pos], so EVERY possible 2*max_offset+1 window is
+         enumerated.
+  bug 2  After supports were picked from the window, the original computed
+         the cluster median but never re-checked that each supporting hit was
+         still within max_offset of the median. Fixed: iterative trim —
+         compute median → remove any supporter beyond max_offset of median
+         → recompute → repeat until stable OR n_support < min_support.
+
+Public API: `enumerate_clusters(bag, max_offset=5, min_frac=0.5)`.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -74,15 +73,82 @@ def _per_site_hit_by_nc_pos_L(bag: BagRetention) -> dict[tuple[int, int], dict[i
     out: dict[tuple[int, int], dict[int, list[Hit]]] = defaultdict(dict)
     for sr in bag.retained:
         for (nc_pos, L), hits in sr.hits_by_nc_pos_L.items():
-            # already sorted by (-m, flank_pos) at retention
             out[(nc_pos, L)][sr.site_idx] = hits
     return out
 
 
 def _ranked_hits(site_hits: list[Hit]) -> list[tuple[int, Hit]]:
-    """Return [(rank, hit), ...] where rank 1 = best (highest m, tie-break by flank_pos)."""
-    # Already sorted best-first by (-m, flank_pos) in multi_hit_retention._group_by_nc_pos_L
+    """[(rank, hit), ...] where rank 1 = best. Already sorted best-first."""
     return [(r + 1, h) for r, h in enumerate(site_hits)]
+
+
+def _select_supporters_at_center(center: int,
+                                   ranked_by_site: dict[int, list[tuple[int, Hit]]],
+                                   ties_for_best_by_site: dict[int, int],
+                                   max_offset: int) -> list[SupportingSite]:
+    """For each site pick the hit in [center-max_offset, center+max_offset]
+    closest to center. Returns [] when no site qualifies."""
+    lo, hi = center - max_offset, center + max_offset
+    out: list[SupportingSite] = []
+    for s, ranked in ranked_by_site.items():
+        in_win = [(r, h) for r, h in ranked if lo <= h.flank_pos <= hi]
+        if not in_win:
+            continue
+        in_win.sort(key=lambda rh: (abs(rh[1].flank_pos - center),
+                                     -rh[1].m, rh[1].flank_pos))
+        r, h = in_win[0]
+        out.append(SupportingSite(
+            site_idx=s, chosen_hit=h, rank_within_site=r,
+            offset_from_median=0,
+            n_hits_this_site_at_nc_pos_L=ties_for_best_by_site[s],
+        ))
+    return out
+
+
+def _iterative_trim_to_median_window(supporters: list[SupportingSite],
+                                       max_offset: int,
+                                       min_support: int,
+                                       ranked_by_site: dict[int, list[tuple[int, Hit]]],
+                                       ties_for_best_by_site: dict[int, int],
+                                       max_iter: int = 20,
+                                       ) -> tuple[list[SupportingSite], int]:
+    """P2b bug-2 fix: iteratively re-select supporters around the running
+    median until two consecutive iterations give the SAME supporters at the
+    SAME median AND every supporter is within max_offset of that median.
+
+    Returns (final_supporters, final_median_or_-1_if_empty).
+    """
+    prev_sig: tuple | None = None
+    for _ in range(max_iter):
+        if len(supporters) < min_support:
+            return [], -1
+        positions = [ss.chosen_hit.flank_pos for ss in supporters]
+        fpm = int(median(positions))
+        rebuilt = _select_supporters_at_center(fpm, ranked_by_site,
+                                                 ties_for_best_by_site, max_offset)
+        if len(rebuilt) < min_support:
+            return [], -1
+        new_positions = [ss.chosen_hit.flank_pos for ss in rebuilt]
+        new_fpm = int(median(new_positions))
+        new_sig = (new_fpm, tuple(sorted((ss.site_idx, ss.chosen_hit.flank_pos)
+                                           for ss in rebuilt)))
+        if new_sig == prev_sig:
+            # Fixed point: supporters stable AND median stable
+            final = [ss for ss in rebuilt
+                      if abs(ss.chosen_hit.flank_pos - new_fpm) <= max_offset]
+            if len(final) < min_support:
+                return [], -1
+            return final, new_fpm
+        prev_sig = new_sig
+        supporters = rebuilt
+    # No convergence within max_iter — return current state if valid
+    positions = [ss.chosen_hit.flank_pos for ss in supporters]
+    fpm = int(median(positions))
+    final = [ss for ss in supporters
+              if abs(ss.chosen_hit.flank_pos - fpm) <= max_offset]
+    if len(final) < min_support:
+        return [], -1
+    return final, fpm
 
 
 def enumerate_clusters(bag: BagRetention,
@@ -90,27 +156,28 @@ def enumerate_clusters(bag: BagRetention,
                         min_frac: float = 0.5,
                         dedup_jaccard_min: float = 0.80,
                         ) -> list[Cluster]:
-    """Enumerate all (nc_pos, L) windows whose support_frac >= min_frac."""
+    """Enumerate all (nc_pos, L) windows whose support_frac >= min_frac.
+
+    P2b correctness invariants:
+      - Centers = every integer in [min_observed, max_observed] per (nc_pos, L).
+      - After supports selected, iterative trim ensures every supporting hit
+        is within max_offset of the cluster median.
+      - Each site contributes at most one hit per cluster.
+      - support_frac denominator = frozen K_valid (not per-cluster site count).
+    """
     K_valid = bag.K_valid
     if K_valid == 0:
         return []
-    min_support = max(1, int(min_frac * K_valid + 0.9999))  # ceil
+    min_support = max(1, int(min_frac * K_valid + 0.9999))
     by_nc_pos_L = _per_site_hit_by_nc_pos_L(bag)
 
     all_clusters: list[Cluster] = []
     for (nc_pos, L), per_site in by_nc_pos_L.items():
-        # candidate window centers = every observed flank_pos (deduped)
-        centers = sorted({h.flank_pos for site_hits in per_site.values() for h in site_hits})
-        if not centers:
+        observed = sorted({h.flank_pos for site_hits in per_site.values()
+                            for h in site_hits})
+        if not observed:
             continue
-
-        # per-site hit lists with ranks
-        ranked_by_site: dict[int, list[tuple[int, Hit]]] = {
-            s: _ranked_hits(hits) for s, hits in per_site.items()
-        }
-        # multiplicity = ties-for-best per site at this (nc_pos, L).  Partial
-        # matches at nearby offsets inflate a raw hit count but are not real
-        # ambiguity — only hits that tie the per-site best m are counted.
+        ranked_by_site = {s: _ranked_hits(hits) for s, hits in per_site.items()}
         ties_for_best_by_site: dict[int, int] = {}
         for s, hits in per_site.items():
             if not hits:
@@ -118,48 +185,46 @@ def enumerate_clusters(bag: BagRetention,
             best_m = max(h.m for h in hits)
             ties_for_best_by_site[s] = sum(1 for h in hits if h.m == best_m)
 
+        # P2b bug-1 fix: enumerate EVERY integer center in [min, max].
+        centers = range(observed[0], observed[-1] + 1)
         candidate_clusters: list[Cluster] = []
+        seen_centers: set[int] = set()
         for center in centers:
-            lo, hi = center - max_offset, center + max_offset
-            supporting: list[SupportingSite] = []
-            # for each site, choose the hit in [lo, hi] closest to center;
-            # if no hit in window, site does not support this cluster
-            for s, ranked in ranked_by_site.items():
-                in_win = [(r, h) for r, h in ranked if lo <= h.flank_pos <= hi]
-                if not in_win:
-                    continue
-                in_win.sort(key=lambda rh: (abs(rh[1].flank_pos - center),
-                                             -rh[1].m, rh[1].flank_pos))
-                r, h = in_win[0]
-                supporting.append(SupportingSite(
-                    site_idx=s, chosen_hit=h, rank_within_site=r,
-                    offset_from_median=0,  # fill after we know the median
-                    n_hits_this_site_at_nc_pos_L=ties_for_best_by_site[s],
-                ))
-            if len(supporting) < min_support:
+            supporters = _select_supporters_at_center(
+                center, ranked_by_site, ties_for_best_by_site, max_offset)
+            if len(supporters) < min_support:
                 continue
+            # P2b bug-2 fix: iterative trim to median window
+            supporters, fpm = _iterative_trim_to_median_window(
+                supporters, max_offset, min_support,
+                ranked_by_site, ties_for_best_by_site)
+            if len(supporters) < min_support or fpm < 0:
+                continue
+            # Dedup identical cluster signatures by (median, support set)
+            key = (fpm, frozenset(ss.site_idx for ss in supporters))
+            if key in seen_centers:
+                continue
+            seen_centers.add(key)
 
-            positions = [ss.chosen_hit.flank_pos for ss in supporting]
-            fpm = int(median(positions))
+            positions = [ss.chosen_hit.flank_pos for ss in supporters]
             fp_mad = _mad(positions)
-            # refill offset_from_median
-            for ss in supporting:
+            for ss in supporters:
                 ss.offset_from_median = ss.chosen_hit.flank_pos - fpm
-            m_fracs = [ss.chosen_hit.m / L for ss in supporting]
+            m_fracs = [ss.chosen_hit.m / L for ss in supporters]
             orient_counts = {"fwd": 0, "rc": 0}
-            for ss in supporting:
+            for ss in supporters:
                 orient_counts[ss.chosen_hit.orient] += 1
             mean_mult = sum(ties_for_best_by_site[ss.site_idx]
-                              for ss in supporting) / len(supporting)
-            n_best = sum(1 for ss in supporting if ss.rank_within_site == 1)
+                              for ss in supporters) / len(supporters)
+            n_best = sum(1 for ss in supporters if ss.rank_within_site == 1)
             candidate_clusters.append(Cluster(
                 nc_pos=nc_pos, L=L,
                 flank_pos_median=fpm, flank_pos_mad=fp_mad,
                 flank_pos_min=min(positions), flank_pos_max=max(positions),
-                n_support=len(supporting),
-                support_frac=len(supporting) / K_valid,
+                n_support=len(supporters),
+                support_frac=len(supporters) / K_valid,
                 K_valid=K_valid,
-                supporting_sites=supporting,
+                supporting_sites=supporters,
                 mean_m_frac=sum(m_fracs) / len(m_fracs),
                 min_m_frac=min(m_fracs),
                 n_sites_cluster_hit_is_best=n_best,
@@ -167,12 +232,7 @@ def enumerate_clusters(bag: BagRetention,
                 orient_counts=orient_counts,
             ))
 
-        # Dedup bleed-through: candidates at nearby offsets that come from
-        # partial matches of the same underlying motif copy share supporting
-        # sites.  Rule: if two candidates share >= dedup_jaccard_min of
-        # supporting sites AND medians are within `max_offset` of each other
-        # (full window width, not half), keep the one with higher mean_m_frac,
-        # breaking ties by tighter MAD.
+        # Dedup bleed-through: candidates at nearby offsets sharing supports
         candidate_clusters.sort(key=lambda c: (-c.n_support,
                                                  -c.mean_m_frac,
                                                  c.flank_pos_mad))
