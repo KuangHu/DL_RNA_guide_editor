@@ -1,3 +1,30 @@
+# Human context review and TSD/TIR gap (2026-10-11)
+
+Reviewed 17 automatically selected high/low bags, 73 supporting alignments,
+actual event alleles and available actual copy slices. The current legacy scan
+has no dedicated TSD/TIR origin partition: complexity gates and background
+grouping do not establish sequence origin. Older TSD diagnostics/partitions are
+not in its execution path. Verified coordinates would help with boundary and
+frame problems but are not a complete repeat-origin defense.
+
+Two control supporters overlap inverted terminal-window sequence (IS5 CDS00149:
+7 bp of an 11 bp local repeat; IS1 CDS00712: 3 bp of a 13 bp repeat). This does not
+assign the entire bag's signal to TIR. IS110 CDS07967 deserves retention: all four
+cores are exact, stay inside all best boundaries, and no >=10 bp exact terminal-
+window repeat was found. CDS02002's three current input sets omit its detected
+source D1-D4 RNA-model interval; actual EBS positions remain unknown.
+
+55/73 top candidates are L=9 and 12/299 supporter cores are exact. Short DNA-guide
+and multi-segment RNA pairing are not tested. Existing complexity gates would
+also reject known 4/5 bp IS608/ISDra2 target examples if reused unchanged.
+
+See `evidence/_family_signal_review/README.md`, the 17-bag HTML, actual-sequence
+four-panel PNG/SVG, per-site metrics and reproducible review script. Repairs must
+address input/scaffold coverage, actual-copy provenance, canonical frames,
+continuous repeat-origin partitions and short/split candidate architecture before
+recalibrating. No new classifier, binary score threshold or AUC improvement is
+claimed by this diagnostic review.
+
 # Copy-carrier bundle audit (2026-10-11)
 
 Remote carrier export 110c692 was audited against every original request and

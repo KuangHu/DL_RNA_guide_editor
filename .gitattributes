@@ -2,3 +2,5 @@
 # CRLF, empty terminal TSV fields and SVG path whitespace are generated data.
 evidence/_family_annotation/** -text whitespace=cr-at-eol,-blank-at-eol
 evidence/_family_signal/** -text whitespace=cr-at-eol,-blank-at-eol
+
+evidence/_family_signal_review/** -text whitespace=cr-at-eol,-blank-at-eol
