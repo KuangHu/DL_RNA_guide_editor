@@ -11,6 +11,7 @@ import argparse
 import csv
 import gzip
 import hashlib
+import io
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -172,7 +173,9 @@ def main():
     cohort_events = [r for r in read_tsv(root / "source_events.tsv") if r["bag_id"] in bag_rows]
     member_rows = []
     member_gbk_path = out / "all_member_events.gbk.gz"
-    with gzip.open(member_gbk_path, "wt", encoding="utf-8", newline="") as fh:
+    with member_gbk_path.open("wb") as raw_gzip:
+      with gzip.GzipFile(fileobj=raw_gzip, mode="wb", mtime=0) as compressed:
+       with io.TextIOWrapper(compressed, encoding="utf-8", newline="") as fh:
         for event in cohort_events:
             bag_id = event["bag_id"]
             family = bag_rows[bag_id]["family_label"]
@@ -200,6 +203,9 @@ def main():
             SeqIO.write(annotated_record(event, bag_id, member_mechanism_family, member_label, nt, "all_member_events"), fh, "genbank")
     member_cols = list(member_rows[0]) if member_rows else []
     write_tsv(out / "all_member_events.tsv", member_rows, member_cols)
+    member_label_counts = defaultdict(int)
+    for row in member_rows:
+        member_label_counts[row["member_family_label"]] += 1
     cols = list(gold_rows[0])
     write_tsv(out / "mechanism_gold_set.tsv", gold_rows, cols)
     counts = defaultdict(int)
@@ -209,6 +215,9 @@ def main():
         "n_bags": len(gold_rows), "n_representative_gbk_records": len(records),
         "n_all_member_event_records": len(member_rows),
         "all_member_genbank": member_gbk_path.name,
+        "member_label_counts": dict(sorted(member_label_counts.items())),
+        "n_member_labels_matching_bag": sum(r["member_label_matches_bag"] == "True" for r in member_rows),
+        "n_member_labels_unknown": sum(r["member_family_label"] == "UNKNOWN" for r in member_rows),
         "label_counts": dict(sorted(counts.items())),
         "n_event_level_guide_target_verified": 0,
         "n_event_level_unknown_not_negative": len(gold_rows),

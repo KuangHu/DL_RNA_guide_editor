@@ -3,6 +3,18 @@
   "n_representative_gbk_records": 86,
   "n_all_member_event_records": 7462,
   "all_member_genbank": "all_member_events.gbk.gz",
+  "member_label_counts": {
+    "IS1": 67,
+    "IS110": 3170,
+    "IS200/IS605-TnpA": 1861,
+    "IS3": 1342,
+    "IS5": 373,
+    "TnpB-like": 453,
+    "UNKNOWN": 73,
+    "group_II_intron": 123
+  },
+  "n_member_labels_matching_bag": 7389,
+  "n_member_labels_unknown": 73,
   "label_counts": {
     "GUIDED_INSERTION_DNA": 4,
     "GUIDED_INSERTION_RNA": 31,

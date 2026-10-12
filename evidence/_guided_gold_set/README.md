@@ -30,6 +30,12 @@ source insertion record in those bags.
 | `GUIDED_NUCLEASE_NOT_INSERTION` | 5 | TnpB-like bags; RNA-guided cleavage is established, but that alone does not establish RNA-guided insertion. |
 | `NON_GUIDED_IS_CONTROL` | 46 | Strict IS1/IS3/IS5 family controls. |
 
+At insert-member level, 7,389/7,462 records agree with the bag family label;
+73 members remain individually `UNKNOWN`. Member counts by annotation are
+IS110 3,170; IS200/IS605-TnpA 1,861; Group II 123; TnpB-like 453; IS1 67;
+IS3 1,342; and IS5 373. The event index preserves disagreement and unknown
+status instead of inheriting a positive bag label blindly.
+
 These are **family-mechanism labels**, grounded in independently supported
 sequence-family annotation and known molecular mechanisms. They are useful
 gold labels for asking whether a detector distinguishes mechanism classes.
