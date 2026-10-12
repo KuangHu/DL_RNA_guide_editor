@@ -22,8 +22,8 @@ The 15-species sweep uses two schemas:
     elem_end, tsd_len, pct_ident, q_cov, flank, flank_fwd, orient, elem_len,
     insert_md5, inserted_len, empty_site_source
   * 14-col (spneumoniae legacy variants): no flank_fwd/orient/elem_len
-    (orient defaults to `+` because the legacy scanner only emitted
-    forward hits; verify downstream).
+    (missing orient remains unknown). Copysites orient describes flank
+    canonicalization, not biological element/ORF orientation.
 
 Carrier FASTAs are discovered by filesystem-wide rglob of
 `genomes*` dirs (same scheme as scripts/step1_corpus_audit.py), so the
@@ -119,6 +119,26 @@ def build_assembly_index(discovery_root: Path) -> dict:
     return idx
 
 
+def select_copy_row(req: dict, candidates: list) -> tuple:
+    """Require request identity, deduplicate equivalent coordinates, refuse ambiguity."""
+    matches = {}
+    for fname, row in candidates:
+        if (row.get('db_id') != req['site_id']
+                or row.get('carrier') != req['carrier_assembly']
+                or row.get('source_event') != req['source_event']
+                or not req.get('carrier_empty_flank120')
+                or row.get('flank') != req['carrier_empty_flank120']
+                or not req.get('insert_md5')
+                or row.get('insert_md5') != req['insert_md5']):
+            continue
+        key = (row.get('contig'), row.get('elem_start'), row.get('elem_end'))
+        matches.setdefault(key, (fname, row))
+    if len(matches) == 1:
+        return next(iter(matches.values())), ''
+    return None, ('ambiguous_matching_copy_coordinates' if matches
+                  else 'no_copy_row_matches_request_identity')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--manifest', type=Path, required=True,
@@ -133,30 +153,36 @@ def main() -> int:
     with args.manifest.open(encoding='utf-8', newline='') as fh:
         needed = [r for r in csv.DictReader(fh, delimiter='\t')]
     needed_by_species = defaultdict(list)
-    needed_by_siteid: dict[str, dict] = {}
+    needed_by_siteid: dict[tuple, dict] = {}
     for r in needed:
         needed_by_species[r['species']].append(r)
-        needed_by_siteid[r['site_id']] = r
+        key = (r['bag_id'], r['site_id'])
+        if key in needed_by_siteid:
+            raise ValueError(f'duplicate request key: {key}')
+        needed_by_siteid[key] = r
     print(f'manifest: {len(needed)} copy sites across {len(needed_by_species)} species')
 
     copysites_root = args.discovery_root / 'copysites'
     assert copysites_root.exists(), copysites_root
 
-    found: dict[str, dict] = {}
-    source_file: dict[str, str] = {}
+    found: dict[tuple, dict] = {}
+    source_file: dict[tuple, str] = {}
+    unresolved_rows = []
     for species, rows in needed_by_species.items():
         wanted = {r['site_id'] for r in rows}
-        hits_here = 0
+        candidates = defaultdict(list)
         for fname, cr in iter_copysites_rows(copysites_root, species):
-            if cr['db_id'] in wanted and cr['db_id'] not in found:
-                found[cr['db_id']] = cr
-                source_file[cr['db_id']] = fname
-                hits_here += 1
-                if len(found) % 500 == 0:
-                    print(f'  resolved {len(found)}/{len(needed)}  (species={species} file={fname})')
-        print(f'  {species:16s} needed={len(wanted):>5d}  resolved_in_cluster_copysites={len(wanted & found.keys()):>5d}')
-    missing = [r for r in needed if r['site_id'] not in found]
-    print(f'resolved: {len(found)}/{len(needed)}  unresolved: {len(missing)}')
+            if cr['db_id'] in wanted:
+                candidates[cr['db_id']].append((fname, cr))
+        for req in rows:
+            match, reason = select_copy_row(req, candidates[req['site_id']])
+            key = (req['bag_id'], req['site_id'])
+            if match:
+                source_file[key], found[key] = match
+            else:
+                unresolved_rows.append({**req, 'reason': reason})
+        print(f'  {species:16s} needed={len(rows):>5d}')
+    print(f'resolved: {len(found)}/{len(needed)}  unresolved: {len(unresolved_rows)}')
 
     print('indexing carrier FASTAs...')
     asm_idx = build_assembly_index(args.discovery_root)
@@ -166,14 +192,6 @@ def main() -> int:
     resolved_path = args.outdir / 'copy_carrier_resolved.tsv'
     fasta_path = args.outdir / 'copy_carrier_slices.fna'
     unresolved_path = args.outdir / 'copy_carrier_unresolved.tsv'
-
-    unresolved_rows = []
-    for r in missing:
-        unresolved_rows.append({
-            'bag_id': r['bag_id'], 'site_id': r['site_id'],
-            'species': r['species'], 'carrier_assembly': r['carrier_assembly'],
-            'reason': 'not_in_cluster_copysites_tables',
-        })
 
     assembly_cache: dict[str, dict[str, str]] = {}
     def load_assembly(stem: str) -> dict[str, str] | None:
@@ -203,8 +221,9 @@ def main() -> int:
     md5_disagreements = []
     slice_misses = []
     with fasta_path.open('w', encoding='utf-8') as ff:
-        for site_id, cr in found.items():
-            req = needed_by_siteid[site_id]
+        for key, cr in found.items():
+            req = needed_by_siteid[key]
+            site_id = req['site_id']
             elem_start = int(cr['elem_start'])
             elem_end = int(cr['elem_end'])
             carrier = cr['carrier']
@@ -216,7 +235,7 @@ def main() -> int:
                 contig_len = len(seq)
                 slice_lo = max(0, elem_start - args.pad_bp)
                 slice_hi = min(len(seq), elem_end + args.pad_bp)
-                orient_from_copysites = cr.get('orient', '') or '+'
+                orient_from_copysites = cr.get('orient', '') or 'unknown'
                 header = (f'>{req["bag_id"]}|{site_id}|{carrier}|{cr["contig"]}|'
                           f'{slice_lo}|{slice_hi}|{orient_from_copysites}')
                 ff.write(header + '\n')
@@ -263,7 +282,7 @@ def main() -> int:
                 'slice_lo_0b': slice_lo,
                 'slice_hi_0b_exclusive': slice_hi,
                 'slice_pad_bp': args.pad_bp,
-                'copysites_source_file': source_file[site_id],
+                'copysites_source_file': source_file[key],
             })
     with resolved_path.open('w', encoding='utf-8', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=RESOLVED_COLS, delimiter='\t', lineterminator='\n')

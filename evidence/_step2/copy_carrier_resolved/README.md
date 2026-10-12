@@ -1,3 +1,11 @@
+> **Audit correction (2026-10-11):** this is the original cluster export,
+> not an approved builder input. Two CDS04925 rows joined the wrong carriers;
+> see `../copy_carrier_bundle_audit/join_issues.tsv`. There are 4,126 verified
+> metadata joins and 2,814 verified slice joins. Neither count verifies nc
+> extraction, insertion boundaries or event independence. Metadata MD5 equality
+> compares inherited source IDs; only 176/2,816 actual intervals match the source
+> sequence on either strand. All raw export rows are retained for audit.
+
 # Copy-carrier evidence resolved from cluster — 2026-10-11
 
 Resolves the 4,128 `.copyNNNN` sites that `scripts/build_v3_corpus_evidence.py`
@@ -45,35 +53,23 @@ for the relevant species, matches on `db_id`, extracts carrier contig
 slices from the Step-1 filesystem-wide assembly index (same rglob rule as
 `scripts/step1_corpus_audit.py`). Nothing is defaulted or substituted.
 
-## Schema caveat
+## Schema caveat and corrected integration rules
 
-Spneumoniae (129 rows) resolves against the legacy 14-column
-`spneumoniae_sites.tsv` + `spneu_v3_sites.tsv` + `spneu_v4_sites.tsv`,
-which omit `flank_fwd`, `orient`, and `elem_len`. The resolved rows carry
-empty `orient` and `flank_fwd_120`; `elem_len_from_copysites` is derived
-as `elem_end - elem_start`. If the downstream builder depends on `orient`
-for RC-aware allele construction, treat these 129 as forward-strand by
-convention (the legacy scanner only emitted forward hits).
+Copysites `orient` encodes flank canonicalization, not element/ORF orientation.
+Legacy missing values remain unknown; do not default them to biological +.
 
-## How the downstream builder consumes this
+The earlier builder integration recommendation is withdrawn. Do not inherit
+source-event `insert_start_in_long_bp`, decomposition quality/confidence,
+`n_equivalent_decompositions`, length or sequence hash as copy-locus evidence.
+An actual copy may contain substitutions and indels. Reconstructed empty flanks
+must remain explicitly reconstructed; they are not observed empty alleles.
 
-`scripts/build_v3_corpus_evidence.py` currently raises
-`copy_requires_actual_carrier_alleles_and_nc` for every `.copyNNNN`. To
-consume this bundle:
+Use the audit's verified slice keys and retain quarantined/missing rows as
+unknown. Derive actual nc fragments and orientation from actual carrier DNA;
+validate copy-specific boundaries separately. The main builder still correctly
+quarantines copies pending those steps.
 
-1. For a `.copy###` site, look up `copy_carrier_resolved.tsv` by `site_id`
-   and `copy_carrier_slices.fna` by `>...|<site_id>|...` header prefix.
-2. Build a shim `row` dict that supplies the source-event-inherited
-   decomposition fields (`inserted_len`, `decomposition_method`,
-   `homologous_identity`, `n_equivalent_decompositions`, `inserted_md5`,
-   `insert_start_in_long_bp`) from the source event's `insertions.tsv` row —
-   the `insert_md5` identity verified for all 4,128 copies permits this.
-3. Use the slice as the `longest_allele` sequence (occupied); derive the
-   `shortest_allele` (empty) from the manifest-provided reconstructed
-   empty flank + inserted_len.
-4. Treat `pct_ident < 1.0` as a signal that `all_boundaries` may raise
-   `deletion_identity_below_upstream_identity` legitimately — these are
-   real divergent copies, not bugs.
-5. Leave the 1,312 ecoli-without-FASTA copies in a distinct
-   `copy_requires_carrier_fasta_download` status — they are still
-   downstream-blocked.
+The resolver now requires site ID, requested carrier, source event, source hash
+and requested flank together, and refuses distinct ambiguous coordinates.
+Rerun it on cluster to recover the two wrong joins; correct replacement
+coordinates cannot be inferred from this exported bundle alone.

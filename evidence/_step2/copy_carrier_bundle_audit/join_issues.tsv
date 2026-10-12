@@ -1,0 +1,3 @@
+bag_id	site_id	expected_carrier	resolved_carrier	issues
+CDS04925	kpneu.E019512.copy29182	GCA_021497485.1	GCA_013378235.1	carrier_assembly_mismatch;requested_flank_mismatch;slice_does_not_reproduce_request_flank
+CDS04925	kpneu.E019512.copy29190	GCA_021655415.1	GCA_014041735.2	carrier_assembly_mismatch;requested_flank_mismatch;slice_does_not_reproduce_request_flank

@@ -1,0 +1,25 @@
+{
+  "counts": {
+    "resolved_rows": 4128,
+    "slices_checked": 2816,
+    "actual_copy_not_exact_source_on_either_strand": 2640,
+    "forward_exact_source_md5": 51,
+    "reverse_complement_exact_source_md5": 125,
+    "quarantined_join_rows": 2,
+    "slice_missing": 1312,
+    "usable_slice_joins": 2814,
+    "metadata_joins_verified": 4126
+  },
+  "input_sha256": {
+    "evidence\\_step2\\copy_carrier_requests\\copy_carrier_requests.tsv": "f271e938bfb8bfe3a968feb708a9addc0a35f5444bcd070e601f1429543a1694",
+    "evidence\\_step2\\copy_carrier_resolved\\copy_carrier_resolved.tsv": "587c304c7271b1f6a4a94d029774c78d50b884dfd9425c673810eb33c9c01896",
+    "evidence\\_step2\\copy_carrier_resolved\\copy_carrier_slices.fna": "7c5d9aa08da71780f5c7b7dd012198351d520e1d6755a83e376062b8e289c599"
+  },
+  "limits": [
+    "Metadata insert_md5 is inherited, not actual-copy identity evidence.",
+    "Hash counts include all checked slices, including quarantined joins.",
+    "Verified joins do not verify insertion boundaries, nc extraction or event independence.",
+    "Copysites orient is flank canonicalization, not element orientation.",
+    "Reconstructed empty flanks are hypotheses, not observed empty alleles."
+  ]
+}

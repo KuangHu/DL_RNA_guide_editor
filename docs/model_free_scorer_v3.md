@@ -1,3 +1,22 @@
+# Copy-carrier bundle audit (2026-10-11)
+
+Remote carrier export 110c692 was audited against every original request and
+actual slice. Two CDS04925 copy IDs selected wrong carriers through a first-row
+site-ID-only join. They are quarantined in
+`evidence/_step2/copy_carrier_bundle_audit/join_issues.tsv`; 4,126 metadata joins
+and 2,814 slice joins verify, while 1,312 slices are missing. The resolver now
+uses composite request identity and rejects ambiguous coordinates. Four
+counterexample tests cover wrong-carrier collisions, wrong flanks, ambiguous
+coordinates and equivalent duplicate exports. Cluster rerun is needed to recover
+the two correct carrier coordinates.
+
+Do not inherit source-event boundary/decomposition evidence into actual copies.
+Copysites orientation is flank canonicalization, not ORF polarity; reconstructed
+empty sequence is not an observed empty allele. The earlier shim integration
+recommendation is withdrawn. Actual copies must supply their own nc extraction
+and boundary evidence. This audit does not change the completed historical-input
+family signal scan below, which remains explicitly exploratory.
+
 # Independent family-cohort signal scan (2026-10-11)
 
 Completed the newly annotated cohort: 40 supported target-family/role bags and

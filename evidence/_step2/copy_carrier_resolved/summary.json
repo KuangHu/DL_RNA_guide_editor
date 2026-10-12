@@ -7,9 +7,9 @@
   "slice_miss_reason": "carrier_assembly_fasta_absent_locally (all ecoli; same gap flagged in Step 1 audit as seed_genome_missing)",
   "insert_md5_match_copy_vs_source": 4128,
   "insert_md5_disagreements": 0,
-  "spot_check_slice_reproduces_source_insert_md5_when_pct_ident_eq_1_and_elem_len_matches": "176 of 177 (99.4%); misses are legitimate carrier-copy divergence, not extraction bugs",
+  "spot_check_slice_reproduces_source_insert_md5_when_pct_ident_eq_1_and_elem_len_matches": "Historical spot check 176/177; does not establish boundary correctness or explain the unmatched case. Full actual-copy both-strand audit: 176/2816 source-exact intervals.",
   "schema_rows_missing_orient_elem_len_flank_fwd": 129,
-  "schema_rows_missing_orient_note": "spneumoniae legacy copysites variants (spneu_v3/v4_sites.tsv) use 14-col schema without flank_fwd/orient/elem_len; defaults to + (forward only was scanned)",
+  "schema_rows_missing_orient_note": "Missing biological orientation remains unknown. Copysites orient, when present, is flank canonicalization.",
   "per_species_coord_resolved": {
     "ecoli": 1312,
     "kpneu": 678,
@@ -111,5 +111,6 @@
     "copy_carrier_unresolved.tsv": "1312 rows (all ecoli); coords present but carrier assembly FASTA not on cluster"
   },
   "nothing_substituted_from_source_event": true,
-  "builder_integration_note": "scripts/build_v3_corpus_evidence.py currently raises copy_requires_actual_carrier_alleles_and_nc for all .copyNNNN. To consume this bundle: for a copy site, read copy_carrier_resolved.tsv row and the matching copy_carrier_slices.fna record; synthesize a row dict with inserted_len/decomposition_method/n_equivalent_decompositions/inserted_md5/insert_start_in_long_bp INHERITED from the source event's insertions.tsv row (same insert_md5 verified for 4128/4128); use the slice as 'longest_allele' sequence; derive 'shortest_allele' from the manifest-provided reconstructed empty flank + inserted_len. The 1312 unresolvable ecoli copies stay flagged copy_requires_carrier_fasta_download."
+  "builder_integration_note": "Previous inherited-decomposition shim recommendation withdrawn. Use verified slice joins only; derive actual-copy nc and orientation and validate copy-specific boundaries. Reconstructed empty flanks are not observed empty alleles.",
+  "audit_status": "Original export; two wrong carrier joins quarantined. See ../copy_carrier_bundle_audit/summary.json."
 }
