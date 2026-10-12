@@ -1,3 +1,30 @@
+# Positive-control correction and DNA-contact geometry (2026-10-11)
+
+The current 40 supported target-family/role bags are family comparators, not
+experimentally validated guide-target positives. All 40 source annotation records
+explicitly say not_experimentally_verified. Protein reference annotation checks
+do not validate the detector's guide recovery; family AUC is not sensitivity.
+
+CDS00730 has supported TnpA source annotations at all eight input sites, but
+subtype/contact geometry remain unresolved. The pictured 6/9 selected target
+core is empty [239,248), at least 33 bp from best cutpoints 204..206. It is not
+a validated mechanism alignment. All eight actual contexts and ORF-canonical
+source inserts are exported under `evidence/_positive_control_review/`.
+
+A stronger correction to the proposed short-DNA-guide branch is necessary:
+published IS608 G_L=AAAG / C_T=TTAC is not a simple contiguous fourmer reverse-
+complement alignment. The current identity model gives only 1/4 on either target
+orientation, and its gates reject the authentic short motifs. Reducing length
+alone, or assuming ordinary gapped alignment suffices, is not a valid repair.
+Subterminal hairpins and ordered canonical/noncanonical contacts must be handled.
+This authentic motif-level sanity case is not yet an end-to-end bag control.
+
+Before claiming recovery, obtain authentic full sequence/contact controls for
+IS608/ISDra2, IS621, group-II and TnpB and define their distinct positive assays.
+Keep these separate from homologous mechanism candidates and family comparators.
+See the positive-control README, 40-bag status table, actual context sequences
+and `audit_positive_control_status.py` for reproducible evidence.
+
 # Human context review and TSD/TIR gap (2026-10-11)
 
 Reviewed 17 automatically selected high/low bags, 73 supporting alignments,
