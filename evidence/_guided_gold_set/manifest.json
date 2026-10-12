@@ -1,0 +1,17 @@
+{
+  "n_bags": 86,
+  "n_representative_gbk_records": 86,
+  "n_all_member_event_records": 7462,
+  "all_member_genbank": "all_member_events.gbk.gz",
+  "label_counts": {
+    "GUIDED_INSERTION_DNA": 4,
+    "GUIDED_INSERTION_RNA": 31,
+    "GUIDED_NUCLEASE_NOT_INSERTION": 5,
+    "NON_GUIDED_IS_CONTROL": 46
+  },
+  "n_event_level_guide_target_verified": 0,
+  "n_event_level_unknown_not_negative": 86,
+  "input_annotation_root": "..\\..\\output\\family_annotation_all6139",
+  "labels_are_family_mechanism_gold_only": true,
+  "caveat": "These are experimentally grounded mechanism-family labels joined to independently annotated source elements. No specific natural event has verified guide-target pairing in this dataset; TnpB labels guided cleavage, not guided insertion."
+}
